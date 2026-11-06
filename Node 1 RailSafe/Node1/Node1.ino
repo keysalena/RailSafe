@@ -55,7 +55,7 @@ void setup() {
   mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
 
   // 2. Inisialisasi Model TinyML
-  if (!ml.begin(g_sigap_model)) {
+  if (!ml.begin(g_RailSafe_model)) {
     Serial.println("❌ ERROR: Gagal memuat Model TinyML!");
     while (1) delay(10);
   }
@@ -126,7 +126,7 @@ void loop() {
 // Fungsi Pengiriman Paket LoRa
 void kirimSinyalLoRa(String status, float confidence) {
   LoRa.beginPacket();
-  LoRa.print("SIGAP:");
+  LoRa.print("RailSafe:");
   LoRa.print(status);
   LoRa.print(":");
   LoRa.print(confidence, 2);
