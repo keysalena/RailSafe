@@ -7,16 +7,17 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration {
     public function up(): void
     {
-        Schema::table('users', function (Blueprint $table) {
-            // Role: admin | operator (halaman dashboard bisa diakses keduanya)
-            $table->string('role', 20)->default('operator')->after('email');
+        Schema::table('users', function (Blueprint $t) {
+            $t->string('role', 20)->default('operator');      // superadmin | operator
+            $t->boolean('is_active')->default(true);
+            $t->timestamp('last_login_at')->nullable();
         });
     }
 
     public function down(): void
     {
-        Schema::table('users', function (Blueprint $table) {
-            $table->dropColumn('role');
+        Schema::table('users', function (Blueprint $t) {
+            $t->dropColumn(['role', 'is_active', 'last_login_at']);
         });
     }
 };

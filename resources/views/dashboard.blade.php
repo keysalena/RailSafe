@@ -1,145 +1,140 @@
 @extends('layouts.app')
-
-@section('title', 'Real-Time Monitoring')
-@section('page_title', 'Real-Time Monitoring')
+@section('title', 'Dashboard')
 
 @section('content')
-    <div class="alarm" id="alarm">
-        <div><b>⚠ PERINGATAN: KERETA TERDETEKSI MENDEKAT (ALERT_KERETA)</b><div id="alarmInfo" style="font-size:13px;margin-top:4px"></div></div>
-        <button id="ackBtn">Konfirmasi &amp; Matikan Alarm</button>
+<div class="top">
+  <h1>Dashboard</h1>
+  @if($crossings->count() > 1)
+  <form method="GET" action="{{ route('dashboard') }}" class="f" style="min-width:200px">
+    <select name="crossing" onchange="this.form.submit()" aria-label="Pilih pos">
+      <option value="">Semua pos</option>
+      @foreach($crossings as $c)<option value="{{ $c->id }}" @selected($selected === $c->id)>{{ $c->code }}</option>@endforeach
+    </select>
+  </form>
+  @endif
+  <button class="btn ghost" id="snd" type="button">Suara alarm: mati</button>
+</div>
+
+<div class="abn" id="abn" role="alert"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.01"/></svg><div><div>Kereta terdeteksi, menunggu respons petugas</div><small id="abt"></small></div><big id="abc">0</big></div>
+
+<section class="kpis" aria-label="Ringkasan hari ini">
+  <div class="kpi"><b id="k1">0</b><span>Deteksi kereta hari ini</span></div>
+  <div class="kpi"><b id="k2">0</b><span>Tanpa respons petugas</span></div>
+  <div class="kpi"><b id="k3">0</b><span>Rintangan terdeteksi</span></div>
+  <div class="kpi blue"><b id="k4">0%</b><span>Palang ditutup manual</span></div>
+</section>
+
+<section class="g g2">
+  <div class="card">
+    <div class="ch"><h2>Mode penutupan palang</h2><span class="pill">Hari ini</span></div>
+    <div class="donut"><svg viewBox="0 0 120 120" id="dn"></svg><div><small>Total penutupan</small><b id="dt">0</b></div></div>
+    <div class="dl"><div><b id="dm">0</b><span>Manual</span></div><div><b id="da">0</b><span>Otomatis</span></div></div>
+  </div>
+  <div class="card">
+    <div class="ch"><h2>Deteksi per jam</h2><span class="pill">00.00 sampai 23.00</span></div>
+    <div class="lg"><span><i style="background:var(--yellow)"></i>Hari ini</span><span><i style="background:var(--blue)"></i>Rata-rata 7 hari</span></div>
+    <svg id="area" viewBox="0 0 560 210" style="width:100%;height:auto" role="img" aria-label="Grafik deteksi per jam hari ini dibanding rata-rata 7 hari"></svg>
+  </div>
+</section>
+
+<section class="g g3">
+  <div class="card">
+    <div class="ch"><h2>Telemetri sensor getaran</h2><span class="pill" id="lvu">Live</span></div>
+    <div class="live-label" id="ll">-</div>
+    <div class="muted" style="font-size:12px;margin-top:2px">Keyakinan model TinyML</div>
+    <div class="pbar"><i id="lb" style="width:0"></i></div>
+    <div class="mini">
+      <div><b id="lbat">-</b><span>Baterai Node 1</span></div>
+      <div><b id="lrs">-</b><span>RSSI LoRa</span></div>
+      <div><b id="lds">-</b><span>Jarak HC-SR04</span></div>
     </div>
+  </div>
+  <div class="card">
+    <div class="ch"><h2>Respons petugas, 7 hari</h2><span class="pill">Mingguan</span></div>
+    <div class="lg"><span><i style="background:var(--yellow)"></i>Merespons</span><span><i style="background:var(--blue)"></i>Tanpa respons</span></div>
+    <div class="bars" id="bars"><div class="yl" id="yl"></div></div>
+    <div class="xl" id="xl"></div>
+  </div>
+</section>
 
-    <div class="kpis">
-        <div class="kpi"><div class="v" id="kClass">-</div><div class="l">Status Getaran Rel</div></div>
-        <div class="kpi"><div class="v" id="kConf">-</div><div class="l">Confidence Score</div></div>
-        <div class="kpi"><div class="v" id="kBat">-</div><div class="l">Baterai Node 1 (2S2P)</div></div>
-        <div class="kpi b"><div class="v" id="kRssi">-</div><div class="l">LoRa RSSI</div></div>
-    </div>
+<section class="g g3">
+  <div class="card"><div class="ch"><h2>Perangkat</h2><span class="pill">Heartbeat</span></div><div id="devs"></div></div>
+  <div class="card"><div class="ch"><h2>Kesehatan sensor</h2></div><div id="sens"></div></div>
+</section>
 
-    <div class="grid">
-        <div class="card">
-            <h3>Live Status Telemetri Sensor (TinyML)</h3>
-            <div class="chips">
-                <div class="chip" data-c="idle">Idle</div>
-                <div class="chip" data-c="truk">Truk</div>
-                <div class="chip kereta" data-c="kereta">Kereta</div>
-            </div>
-            <svg class="trend" viewBox="0 0 400 90" preserveAspectRatio="none"><polyline id="trend" fill="none" stroke="#0b63f6" stroke-width="2.5"/></svg>
-            <div class="mut">Tren confidence 20 pembacaan terakhir · <span id="lastSeen">-</span></div>
-        </div>
+<section class="card">
+  <div class="ch"><h2>Kejadian terbaru</h2><a class="btn sm ghost" href="{{ route('events.index') }}">Lihat semua</a></div>
+  <div class="tw"><table><thead><tr><th>Waktu</th><th>ID</th><th>Kejadian</th><th>Mode</th><th>Probabilitas</th><th>Respons petugas</th><th>Rintangan</th></tr></thead><tbody id="rows"></tbody></table></div>
+</section>
+@endsection
 
-        <div class="card">
-            <h3>Kesehatan Hardware</h3>
-            <div class="row"><span>Daya baterai</span><b id="hBat">-</b></div><div class="bar"><div id="bBat"></div></div>
-            <div class="row"><span>Koneksi LoRa (RSSI)</span><b id="hRssi">-</b></div><div class="bar"><div id="bRssi"></div></div>
-            <div class="row"><span>Jarak HC-SR04</span><b id="hDist">-</b></div>
-        </div>
-
-        <div class="card full">
-            <h3>Panel Kontrol Palang &amp; Manual Override</h3>
-            <div class="row" style="align-items:center">
-                <div>
-                    <div class="big" id="gState" style="text-transform:uppercase">-</div>
-                    <div class="mut">Mode: <span id="gMode">-</span> · <span id="gPending"></span></div>
-                </div>
-                <div class="mut" style="text-align:right">Perintah dikirim ke Node 2.<br>Gunakan saat kondisi darurat / fail-safe.</div>
-            </div>
-            <div class="gate">
-                <button class="open" id="btnOpen">Buka Palang</button>
-                <button class="close" id="btnClose">Tutup Palang</button>
-            </div>
-        </div>
-    </div>
+@section('right')
+<div class="up"><h3>Kejadian perlu ditinjau</h3><div id="ue"></div></div>
 @endsection
 
 @push('scripts')
-@verbatim
 <script>
-const csrf = document.querySelector('meta[name=csrf-token]').content;
-const $ = id => document.getElementById(id);
-const hdr = {'Accept':'application/json','Content-Type':'application/json','X-CSRF-TOKEN':csrf};
-let currentAlert = null, sirenTimer = null, ctx = null;
+const SUMMARY_URL=@json(route('dashboard.summary', array_filter(['crossing' => $selected])));
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const LB={TRAIN_INBOUND:['Menunggu respons','t-warn'],MANUAL_OK:['Palang ditutup petugas','t-ok'],FAIL_SAFE_AUTOGATE:['Fail-safe palang otomatis','t-warn'],CRITICAL_OBSTACLE:['Rintangan, palang ditahan','t-bad']};
+const ML={IDLE:['Idle','var(--muted)'],TRUK:['Truk','var(--yellow)'],KERETA:['Kereta','var(--red)']};
+const DS={ACTIVE:['Aktif','t-ok'],DISCONNECTED:['Terputus','t-bad'],FAULT:['Gangguan','t-warn'],UNKNOWN:['Belum diketahui','t-mute']};
+const SN={MPU6050:'MPU6050 (getaran rel)',LORA:'Modul LoRa Ra-02',ULTRASONIC_1:'Ultrasonik HC-SR04 #1',ULTRASONIC_2:'Ultrasonik HC-SR04 #2',SERVO:'Servo palang'};
+let soundOn=false,ac=null;
 
-function siren(on){
-  if(on && !sirenTimer){
-    try{ ctx = ctx || new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ return; }
-    let hi = false;
-    sirenTimer = setInterval(()=>{
-      const o = ctx.createOscillator(), g = ctx.createGain();
-      o.type='square'; o.frequency.value = (hi=!hi) ? 960 : 700; g.gain.value = .15;
-      o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime+.4);
-    }, 450);
-  } else if(!on && sirenTimer){ clearInterval(sirenTimer); sirenTimer=null; }
-}
-// Browser memblokir audio sebelum ada interaksi -> aktifkan pada klik pertama
-document.addEventListener('click', ()=>{ try{ ctx = ctx || new (window.AudioContext||window.webkitAudioContext)(); ctx.resume(); }catch(e){} }, {once:true});
+$('snd').onclick=()=>{soundOn=!soundOn;$('snd').textContent='Suara alarm: '+(soundOn?'hidup':'mati');if(soundOn)beep()};
+function beep(){if(!soundOn)return;try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();const o=ac.createOscillator(),g=ac.createGain();o.type='square';o.frequency.value=880;g.gain.value=.08;o.connect(g);g.connect(ac.destination);o.start();o.stop(ac.currentTime+.25)}catch(e){}}
+
+function smooth(p){let d='M'+p[0][0]+','+p[0][1];for(let i=0;i<p.length-1;i++){const p0=p[i-1]||p[i],p1=p[i],p2=p[i+1],p3=p[i+2]||p2;d+=' C'+(p1[0]+(p2[0]-p0[0])/6)+','+(p1[1]+(p2[1]-p0[1])/6)+' '+(p2[0]-(p3[0]-p1[0])/6)+','+(p2[1]-(p3[1]-p1[1])/6)+' '+p2[0]+','+p2[1]}return d}
+
+function drawDonut(m,a){const r=44,c=2*Math.PI*r,t=m+a;
+ $('dn').innerHTML=t?`<circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--yellow)" stroke-width="22"/><circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--blue)" stroke-width="22" stroke-dasharray="${m/t*c} ${c-m/t*c}"/>`:`<circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--line)" stroke-width="22"/>`;
+ $('dt').textContent=t;$('dm').innerHTML=m+' <small class="muted"> manual</small>';$('da').innerHTML=a+' <small class="muted"> otomatis</small>';}
+
+function drawArea(h,nowH){
+ const W=560,H=210,L=34,B=24,T=8,mx=Math.max(3,Math.ceil(Math.max(...h.today,...h.avg))),step=Math.ceil(mx/4);
+ const x=i=>L+i*(W-L-10)/23,y=v=>T+(H-T-B)*(1-v/mx);let s='';
+ for(let v=0;v<=mx;v+=step)s+=`<line x1="${L}" x2="${W-6}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L-8}" y="${y(v)+4}" text-anchor="end" font-size="10.5" fill="var(--muted)">${v}</text>`;
+ const pa=h.avg.map((v,i)=>[x(i),y(v)]),pt=h.today.slice(0,nowH+1).map((v,i)=>[x(i),y(v)]);
+ if(pt.length>1)s+=`<path d="${smooth(pt)} L${x(pt.length-1)},${y(0)} L${x(0)},${y(0)} Z" fill="var(--yellow)" opacity=".28"/><path d="${smooth(pt)}" fill="none" stroke="var(--yellow)" stroke-width="2.5"/>`;
+ s+=`<path d="${smooth(pa)}" fill="none" stroke="var(--blue)" stroke-width="2.5"/>`;
+ for(let i=0;i<24;i+=3)s+=`<text x="${x(i)}" y="${H-6}" text-anchor="middle" font-size="10.5" fill="var(--muted)">${String(i).padStart(2,'0')}</text>`;
+ $('area').innerHTML=s}
+
+function drawBars(w){const mx=Math.max(4,...w.map(d=>d.total));
+ $('yl').innerHTML=[mx,Math.round(mx*2/3),Math.round(mx/3),0].map(v=>`<span>${v}</span>`).join('');
+ document.querySelectorAll('#bars .col').forEach(e=>e.remove());
+ $('bars').insertAdjacentHTML('beforeend',w.map(d=>`<div class="col" style="height:${d.total/mx*100}%" title="${esc(d.label)}: ${d.total} deteksi, ${d.no_response} tanpa respons">${d.total?`<i style="height:${d.no_response/d.total*100}%;background:var(--blue)"></i><i style="height:${(d.total-d.no_response)/d.total*100}%;background:var(--yellow)"></i>`:''}</div>`).join(''));
+ $('xl').innerHTML=w.map(d=>`<span>${esc(d.label)}</span>`).join('')}
+
+function drawLive(l){const m=ML[l.ml_label];
+ $('ll').textContent=m?m[0]:'Tidak ada data';$('ll').style.color=m?m[1]:'var(--muted)';
+ $('lb').style.width=(l.ml_confidence||0)+'%';$('lvu').textContent=m?'Live':'Offline';
+ $('lbat').textContent=l.battery!=null?l.battery+'%':'-';$('lrs').textContent=l.rssi!=null?l.rssi+' dBm':'-';$('lds').textContent=l.distance_cm!=null?Math.round(l.distance_cm)+' cm':'-'}
+
+function drawDevs(a){$('devs').innerHTML=a.length?a.map(d=>{const s=DS[d.status];return `<div class="item"><div class="ic ${d.type==='GATE_CONTROLLER'?'y':''}"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M8 18v2M16 18v2"/></svg></div><div><b>${esc(d.name||d.code)}</b><small>${esc(d.code)} · ${esc(d.crossing)}${d.battery!=null?' · baterai '+d.battery+'%':''}</small></div><div class="r"><span class="tag ${s[1]}">${s[0]}</span>${d.seen_s!=null?`<small>lapor ${d.seen_s} dtk lalu</small>`:''}</div></div>`}).join(''):'<p class="muted">Belum ada perangkat.</p>'}
+
+function drawSens(a){$('sens').innerHTML=a.length?a.map(s=>{let t=['Sehat','t-ok'];if(s.health==='FAULT')t=['Gangguan','t-bad'];else if(s.health==='UNKNOWN')t=['Belum diketahui','t-mute'];else if(s.state==='STANDBY')t=['Siaga','t-mute'];else if(s.state==='OFF')t=['Mati','t-mute'];
+ return `<div class="item"><div><b>${esc(SN[s.type]||s.type)}</b><small>${esc(s.detail||s.device)}</small></div><div class="r"><span class="tag ${t[1]}">${t[0]}</span></div></div>`}).join(''):'<p class="muted">Belum ada laporan sensor.</p>'}
+
+function drawRows(a){$('rows').innerHTML=a.length?a.map(e=>{const l=LB[e.status]||LB.TRAIN_INBOUND;
+ const resp=!e.guard?'-':e.guard==='CONFIRMED'?'Tombol ditekan'+(e.response_ms!=null?' ('+(e.response_ms/1000).toFixed(1)+' dtk)':''):'Tidak ada respons';
+ return `<tr onclick="location.href='${esc(e.url)}'"><td>${esc(e.date)} ${esc(e.time)}</td><td class="mono">${esc(e.id)}</td><td><span class="tag ${l[1]}">${l[0]}</span></td><td>${e.mode?(e.mode==='MANUAL'?'Manual':'Otomatis'):'-'}</td><td>${e.confidence!=null?e.confidence+'%':'-'}</td><td>${resp}</td><td>${e.obstacle===true?'<span class="tag t-bad">Terdeteksi</span>':e.obstacle===false?'<span class="tag t-mute">Bebas</span>':'-'}</td></tr>`}).join(''):'<tr><td colspan="7">Belum ada kejadian.</td></tr>'}
+
+function drawReview(a){$('ue').innerHTML=a.length?a.map(e=>`<a class="ue" style="display:block;text-decoration:none;color:inherit" href="${esc(e.url)}"><span class="d">${esc(e.date)}</span><span class="tm">${esc(e.time)} WIB</span><b>${(LB[e.status]||LB.TRAIN_INBOUND)[0]}</b><small>${esc(e.id)} · tambahkan catatan evaluasi</small></a>`).join(''):'<p class="muted">Tidak ada kejadian tanpa respons.</p>'}
 
 function render(d){
-  const t = d.telemetry, h = d.hardware;
-  document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on', !!t && c.dataset.c===t.vibration_class));
-  $('kClass').textContent = t ? t.vibration_class : '-';
-  $('kConf').textContent = t ? t.confidence.toFixed(1)+'%' : '-';
-  $('lastSeen').textContent = t ? 'update '+new Date(t.recorded_at).toLocaleTimeString('id-ID') : 'belum ada data';
+ $('k1').textContent=d.kpi.total;$('k2').textContent=d.kpi.no_response;$('k3').textContent=d.kpi.obstacle;$('k4').textContent=d.kpi.manual_pct+'%';
+ drawDonut(d.kpi.manual,d.kpi.auto);drawArea(d.hourly,d.now_hour);drawBars(d.weekly);drawLive(d.live);drawDevs(d.devices);drawSens(d.sensors);drawRows(d.recent);drawReview(d.review);
+ const a=d.alert;$('abn').classList.toggle('on',!!a);
+ if(a){$('abc').textContent=a.remaining;$('abt').textContent=a.event_id+(a.confidence!=null?' · keyakinan '+a.confidence+'%':'')+' · palang menutup otomatis jika tidak ada respons';beep()}}
 
-  if(h){
-    $('kBat').textContent = h.battery_percent!=null ? h.battery_percent+'%' : '-';
-    $('hBat').textContent = h.battery_percent!=null ? h.battery_percent+'%'+(h.battery_voltage?' ('+h.battery_voltage+' V)':'') : '-';
-    $('bBat').style.width = (h.battery_percent||0)+'%';
-    $('kRssi').textContent = h.lora_rssi!=null ? h.lora_rssi+' dBm' : '-';
-    $('hRssi').textContent = h.lora_rssi!=null ? h.lora_rssi+' dBm ('+h.lora_quality+')' : '-';
-    $('bRssi').style.width = h.lora_rssi!=null ? Math.max(0,Math.min(100,(h.lora_rssi+130)*100/60))+'%' : '0';
-    $('hDist').textContent = h.distance_cm!=null ? h.distance_cm+' cm' : '-';
-  }
-
-  const pts = d.trend.map((p,i,a)=> (a.length>1? i*400/(a.length-1):0)+','+(85-p.confidence*0.8));
-  $('trend').setAttribute('points', pts.join(' '));
-
-  // Navbar: status node
-  const pill = (n,x)=> x ? `<span class="pill ${x.online?'ok':'bad'}">${n} ${x.online?'online':'offline'}</span>` : '';
-  $('nodes').innerHTML = pill('Node 1', d.devices.node1)+' '+pill('Node 2', d.devices.node2);
-
-  $('gState').textContent = d.gate.state; $('gMode').textContent = d.gate.mode;
-  $('gPending').textContent = d.gate.pending ? 'menunggu eksekusi perangkat…' : '';
-
-  // Alarm (banner + sirine + lonceng di right bar)
-  currentAlert = d.alert;
-  $('alarm').classList.toggle('show', !!d.alert);
-  $('bellDot').classList.toggle('show', !!d.alert);
-  if(d.alert){ $('alarmInfo').textContent = 'Event '+d.alert.event_id+' · '+new Date(d.alert.triggered_at).toLocaleTimeString('id-ID')+(d.alert.confidence?' · confidence '+d.alert.confidence+'%':''); }
-  siren(!!d.alert);
-
-  // Right bar: alert terbaru
-  $('recentAlerts').innerHTML = d.recent_alerts.length ? d.recent_alerts.map(a=>`
-    <div class="act">
-      <div class="t"><span class="tag">${new Date(a.triggered_at).toLocaleDateString('id-ID',{day:'numeric',month:'short'})} · ${new Date(a.triggered_at).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})}</span>
-      <span class="pill ${a.status==='active'?'bad':'ok'}">${a.status==='active'?'aktif':'selesai'}</span></div>
-      <div><b>Kereta terdeteksi</b></div><div class="s">${a.event_id}${a.confidence?' · '+a.confidence+'%':''}</div>
-    </div>`).join('') : '<div class="empty">Belum ada alert.</div>';
-}
-
-async function poll(){
-  try{
-    const r = await fetch('/api/dashboard/live',{headers:hdr,credentials:'same-origin'});
-    if(r.status===401||r.status===419) return location.reload();
-    render(await r.json());
-  }catch(e){ $('nodes').innerHTML='<span class="pill warn">Koneksi server terputus</span>'; }
-}
-
-$('ackBtn').onclick = async ()=>{
-  if(!currentAlert) return;
-  await fetch('/api/dashboard/alerts/'+currentAlert.id+'/acknowledge',{method:'POST',headers:hdr,credentials:'same-origin'});
-  siren(false); poll();
-};
-async function gate(cmd){
-  const label = cmd==='close' ? 'MENUTUP' : 'MEMBUKA';
-  if(!confirm('Yakin ingin '+label+' palang secara manual?')) return;
-  [$('btnOpen'),$('btnClose')].forEach(b=>b.disabled=true);
-  await fetch('/api/dashboard/gate/command',{method:'POST',headers:hdr,credentials:'same-origin',body:JSON.stringify({command:cmd})});
-  [$('btnOpen'),$('btnClose')].forEach(b=>b.disabled=false); poll();
-}
-$('btnOpen').onclick=()=>gate('open'); $('btnClose').onclick=()=>gate('close');
-
-poll(); setInterval(poll, 2000);
+async function load(){let next=3000;
+ try{const r=await fetch(SUMMARY_URL,{headers:{'Accept':'application/json'},credentials:'same-origin'});
+  if(r.status===401||r.status===419){location.href='{{ route('login') }}';return}
+  const d=await r.json();render(d);if(d.alert)next=1000}catch(e){next=5000}
+ setTimeout(load,next)}
+load();
 </script>
-@endverbatim
 @endpush

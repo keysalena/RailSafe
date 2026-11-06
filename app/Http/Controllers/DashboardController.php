@@ -2,118 +2,121 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Alert;
+use App\Models\Crossing;
 use App\Models\Device;
-use App\Models\GateCommand;
-use App\Models\GateState;
-use App\Models\SensorTelemetry;
+use App\Models\LogPerlintasan;
+use App\Models\LogSensor;
+use App\Models\Setting;
 use Illuminate\Http\Request;
 
 class DashboardController extends Controller
 {
-    public function index()
+    public function index(Request $request)
     {
-        return view('dashboard');
+        $user = $request->user();
+        $crossings = Crossing::whereIn('id', $user->accessibleCrossingIds())->orderBy('code')->get();
+
+        return view('dashboard', ['crossings' => $crossings, 'selected' => (int) $request->query('crossing')]);
     }
 
-    // GET /api/dashboard/live  -> dipolling browser tiap ±2 detik
-    public function live()
+    /** JSON untuk pembaruan berkala (AJAX) di dashboard. */
+    public function summary(Request $request)
     {
-        $node1 = Device::where('type', 'node1')->first();
-        $node2 = Device::where('type', 'node2')->first();
+        $ids = $request->user()->scopedCrossingIds((int) $request->query('crossing'));
+        $countdown = (int) Setting::get('countdown_seconds');
+        $today = now()->startOfDay();
 
-        $latest = $node1
-            ? SensorTelemetry::where('device_id', $node1->id)->latest('recorded_at')->first()
-            : null;
+        // --- kejadian hari ini ---
+        $events = LogPerlintasan::with('kontrol')->whereIn('crossing_id', $ids)
+            ->where('detected_at', '>=', $today)->orderBy('detected_at')->get();
+        $k = $events->pluck('kontrol')->filter();
+        $manual = $k->where('control_mode', 'MANUAL')->count();
+        $auto = $k->where('control_mode', 'AUTO')->count();
 
-        $trend = $node1
-            ? SensorTelemetry::where('device_id', $node1->id)->latest('recorded_at')->limit(20)
-                ->get(['confidence', 'vibration_class', 'recorded_at'])->reverse()->values()
-            : [];
+        // --- per jam: hari ini vs rata-rata 7 hari sebelumnya ---
+        $todayHours = array_fill(0, 24, 0);
+        foreach ($events as $e) $todayHours[$e->detected_at->hour]++;
+        $avg = array_fill(0, 24, 0.0);
+        LogPerlintasan::whereIn('crossing_id', $ids)
+            ->whereBetween('detected_at', [$today->copy()->subDays(7), $today])->get(['detected_at'])
+            ->each(function ($e) use (&$avg) { $avg[$e->detected_at->hour] += 1 / 7; });
 
-        $alert = Alert::where('status', 'active')->latest('triggered_at')->first();
-        $gate  = $node2 ? GateState::where('device_id', $node2->id)->first() : null;
-        $pending = $node2
-            ? GateCommand::where('device_id', $node2->id)->whereIn('status', ['pending', 'sent'])->exists()
-            : false;
+        // --- 7 hari terakhir ---
+        $since = $today->copy()->subDays(6);
+        $week = LogPerlintasan::with('kontrol')->whereIn('crossing_id', $ids)
+            ->where('detected_at', '>=', $since)->get()->groupBy(fn ($e) => $e->detected_at->toDateString());
+        $weekly = [];
+        for ($i = 6; $i >= 0; $i--) {
+            $d = $today->copy()->subDays($i);
+            $rows = $week->get($d->toDateString(), collect());
+            $weekly[] = [
+                'label' => $d->locale('id')->isoFormat('ddd'),
+                'total' => $rows->count(),
+                'no_response' => $rows->filter(fn ($r) => $r->kontrol && $r->kontrol->guard_response === 'NO_RESPONSE')->count(),
+            ];
+        }
 
-        $rssi = $latest?->lora_rssi;
+        // --- perangkat dan sensor ---
+        $devices = Device::with('crossing')->whereIn('crossing_id', $ids)->orderBy('device_code')->get();
+        $n1 = $devices->firstWhere('type', 'SENSOR_NODE');
+        $n2 = $devices->firstWhere('type', 'GATE_CONTROLLER');
+        $live = [
+            'ml_label' => $n1 && $n1->status === 'ACTIVE' ? $n1->ml_label : null,
+            'ml_confidence' => $n1?->ml_confidence !== null ? (float) $n1->ml_confidence : null,
+            'battery' => $n1?->battery_level,
+            'rssi' => $n2?->rssi ?? $n1?->rssi,
+            'distance_cm' => $n2?->distance_cm !== null ? (float) $n2->distance_cm : null,
+        ];
+        $sensors = LogSensor::whereIn('device_id', $devices->pluck('id'))
+            ->orderByDesc('reported_at')->orderByDesc('id')->get()
+            ->unique(fn ($s) => $s->device_id.'-'.$s->sensor_type)->values()
+            ->map(fn ($s) => [
+                'device' => $devices->firstWhere('id', $s->device_id)?->device_code,
+                'type' => $s->sensor_type, 'state' => $s->operational_state,
+                'health' => $s->health_status, 'detail' => $s->detail,
+            ]);
 
-        $recent = Alert::latest('triggered_at')->limit(5)
-            ->get(['id', 'event_id', 'confidence', 'status', 'triggered_at']);
+        // --- alarm: kereta terdeteksi, belum ada respons/aksi, masih dalam jendela hitung mundur ---
+        $alert = null;
+        $open = LogPerlintasan::whereIn('crossing_id', $ids)->doesntHave('kontrol')
+            ->where('detected_at', '>=', now()->subSeconds($countdown + 3))->orderByDesc('detected_at')->first();
+        if ($open) {
+            $left = max(0, $countdown - (now()->timestamp - $open->detected_at->timestamp));
+            $alert = ['event_id' => $open->event_id, 'confidence' => $open->confidence, 'remaining' => $left, 'total' => $countdown];
+        }
+
+        // --- tabel terbaru dan daftar perlu ditinjau ---
+        $recent = LogPerlintasan::with('kontrol')->whereIn('crossing_id', $ids)->orderByDesc('detected_at')->limit(8)->get()
+            ->map(fn ($e) => [
+                'id' => $e->event_id, 'url' => route('events.show', $e->id),
+                'time' => $e->detected_at->format('H:i'), 'date' => $e->detected_at->format('d/m'),
+                'confidence' => $e->confidence, 'status' => $e->kontrol->status_label ?? 'TRAIN_INBOUND',
+                'mode' => $e->kontrol->control_mode ?? null, 'guard' => $e->kontrol->guard_response ?? null,
+                'response_ms' => $e->kontrol->response_time_ms ?? null, 'obstacle' => $e->kontrol->obstacle_detected ?? null,
+            ]);
+        $review = LogPerlintasan::with('kontrol')->whereIn('crossing_id', $ids)
+            ->whereHas('kontrol', fn ($q) => $q->where('guard_response', 'NO_RESPONSE'))
+            ->orderByDesc('detected_at')->limit(4)->get()
+            ->map(fn ($e) => ['id' => $e->event_id, 'url' => route('events.show', $e->id),
+                'date' => $e->detected_at->format('d M'), 'time' => $e->detected_at->format('H:i'), 'status' => $e->kontrol->status_label]);
 
         return response()->json([
-            'server_time' => now()->toIso8601String(),
-            'telemetry' => $latest ? [
-                'vibration_class' => $latest->vibration_class,
-                'confidence'      => $latest->confidence,
-                'recorded_at'     => $latest->recorded_at->toIso8601String(),
-            ] : null,
-            'hardware' => $latest ? [
-                'battery_percent' => $latest->battery_percent,
-                'battery_voltage' => $latest->battery_voltage,
-                'lora_rssi'       => $rssi,
-                'lora_quality'    => $rssi === null ? null : ($rssi >= -90 ? 'baik' : ($rssi >= -110 ? 'sedang' : 'lemah')),
-                'distance_cm'     => $latest->distance_cm,
-            ] : null,
-            'trend' => $trend,
-            'devices' => [
-                'node1' => $node1 ? ['online' => $node1->isOnline(), 'last_seen_at' => $node1->last_seen_at?->toIso8601String()] : null,
-                'node2' => $node2 ? ['online' => $node2->isOnline(), 'last_seen_at' => $node2->last_seen_at?->toIso8601String()] : null,
+            'now_hour' => now()->hour,
+            'kpi' => [
+                'total' => $events->count(), 'manual' => $manual, 'auto' => $auto,
+                'no_response' => $k->where('guard_response', 'NO_RESPONSE')->count(),
+                'obstacle' => $k->where('obstacle_detected', true)->count(),
+                'manual_pct' => ($manual + $auto) ? (int) round($manual / ($manual + $auto) * 100) : 0,
             ],
-            'recent_alerts' => $recent,
-            'alert' => $alert ? [
-                'id'           => $alert->id,
-                'event_id'     => $alert->event_id,
-                'event_type'   => $alert->event_type,
-                'confidence'   => $alert->confidence,
-                'triggered_at' => $alert->triggered_at->toIso8601String(),
-            ] : null,
-            'gate' => [
-                'state'   => $gate?->state ?? 'unknown',
-                'mode'    => $gate?->mode ?? 'auto',
-                'pending' => $pending,
-            ],
+            'hourly' => ['today' => $todayHours, 'avg' => array_map(fn ($v) => round($v, 2), $avg)],
+            'weekly' => $weekly,
+            'devices' => $devices->map(fn ($d) => [
+                'code' => $d->device_code, 'name' => $d->name, 'type' => $d->type, 'status' => $d->status,
+                'seen_s' => $d->last_seen_at ? now()->timestamp - $d->last_seen_at->timestamp : null,
+                'battery' => $d->battery_level, 'crossing' => $d->crossing->code,
+            ]),
+            'sensors' => $sensors, 'live' => $live, 'alert' => $alert,
+            'recent' => $recent, 'review' => $review,
         ]);
-    }
-
-    // POST /api/dashboard/alerts/{alert}/acknowledge  -> matikan banner & sirine
-    public function acknowledge(Request $request, Alert $alert)
-    {
-        $alert->update([
-            'status' => 'acknowledged',
-            'acknowledged_at' => now(),
-            'acknowledged_by' => $request->user()->id,
-        ]);
-
-        return response()->json(['ok' => true]);
-    }
-
-    // POST /api/dashboard/gate/command  {command: open|close}
-    public function gateCommand(Request $request)
-    {
-        $data = $request->validate(['command' => 'required|in:open,close']);
-
-        $node2 = Device::where('type', 'node2')->firstOrFail();
-
-        // batalkan perintah lama yang belum diproses
-        GateCommand::where('device_id', $node2->id)->where('status', 'pending')->update(['status' => 'failed']);
-
-        $cmd = GateCommand::create([
-            'device_id'    => $node2->id,
-            'command'      => strtoupper($data['command']),
-            'requested_by' => $request->user()->id,
-        ]);
-
-        GateState::updateOrCreate(
-            ['device_id' => $node2->id],
-            [
-                'state'      => $data['command'] === 'close' ? 'closing' : 'opening',
-                'mode'       => 'remote',
-                'changed_by' => $request->user()->id,
-            ]
-        );
-
-        return response()->json(['ok' => true, 'command_id' => $cmd->id], 201);
     }
 }

@@ -3,20 +3,40 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Str;
 
 class Device extends Model
 {
-    protected $fillable = ['device_id', 'name', 'type', 'location', 'api_key_hash', 'last_seen_at'];
-    protected $hidden = ['api_key_hash'];
-    protected $casts = ['last_seen_at' => 'datetime'];
+    protected $guarded = [];
+    protected $hidden = ['api_token_hash'];
 
-    public function isOnline(int $seconds = 60): bool
+    protected function casts(): array
     {
-        return $this->last_seen_at && $this->last_seen_at->gt(now()->subSeconds($seconds));
+        return ['last_seen_at' => 'datetime', 'is_active' => 'boolean'];
     }
 
-    public static function hashKey(string $plain): string
+    public const OFFLINE_AFTER_SECONDS = 90;
+
+    public function crossing() { return $this->belongsTo(Crossing::class); }
+
+    public static function hashToken(string $plain): string
     {
         return hash('sha256', $plain);
+    }
+
+    /** Buat token baru, simpan hash-nya, kembalikan token asli (ditampilkan sekali saja). */
+    public function issueToken(): string
+    {
+        $plain = 'rs_'.Str::random(40);
+        $this->update(['api_token_hash' => self::hashToken($plain)]);
+        return $plain;
+    }
+
+    /** ACTIVE | DISCONNECTED | FAULT | UNKNOWN (empat status di proposal). */
+    public function getStatusAttribute(): string
+    {
+        if (! $this->last_seen_at) return 'UNKNOWN';
+        if (now()->timestamp - $this->last_seen_at->timestamp > self::OFFLINE_AFTER_SECONDS) return 'DISCONNECTED';
+        return $this->connection_status === 'FAULT' ? 'FAULT' : 'ACTIVE';
     }
 }
