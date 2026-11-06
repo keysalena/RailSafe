@@ -24,6 +24,14 @@
       <a href="{{ route('admin.audit.index') }}" class="{{ request()->routeIs('admin.audit.*') ? 'on' : '' }}"><svg viewBox="0 0 24 24"><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v4h4M10 12h6M10 16h6"/></svg>Audit log</a>
     @endif
   </nav>
+  <div class="prof">
+    <div class="av">{{ auth()->user()->initials() }}</div>
+    <div><b>{{ auth()->user()->name }}</b><small>{{ auth()->user()->isSuperadmin() ? 'Superadmin' : 'Operator' }}</small></div>
+    <div class="ctrl">
+      <button class="sq" id="theme" type="button" aria-label="Ganti tema terang atau gelap"><svg viewBox="0 0 24 24"><path d="M21 13A9 9 0 1111 3a7 7 0 0010 10z"/></svg></button>
+      <form method="POST" action="{{ route('logout') }}">@csrf<button class="sq" type="submit" aria-label="Keluar"><svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg></button></form>
+    </div>
+  </div>
 </aside>
 
 <main class="main">
@@ -32,28 +40,32 @@
   @yield('content')
 </main>
 
-<aside class="rp">
-  <div class="me">
-    <div class="av">{{ auth()->user()->initials() }}</div>
-    <div><b>{{ auth()->user()->name }}</b><small>{{ auth()->user()->isSuperadmin() ? 'Superadmin' : 'Operator' }}</small></div>
-    <div style="margin-left:auto;display:flex;gap:8px">
-      <button class="sq" id="theme" type="button" aria-label="Ganti tema terang atau gelap"><svg viewBox="0 0 24 24"><path d="M21 13A9 9 0 1111 3a7 7 0 0010 10z"/></svg></button>
-      <form method="POST" action="{{ route('logout') }}">@csrf<button class="sq" type="submit" aria-label="Keluar"><svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/></svg></button></form>
-    </div>
+</div>
+<div class="calw" id="calw" role="complementary" aria-label="Kalender">
+  <button class="calt" id="calt" type="button" aria-label="Tampilkan atau sembunyikan kalender" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
+  <div class="calp">
+    <div class="calh"><button id="calprev" type="button" aria-label="Bulan sebelumnya">&lsaquo;</button><b id="cm"></b><button id="calnext" type="button" aria-label="Bulan berikutnya">&rsaquo;</button></div>
+    <div class="cg" id="cg"></div>
   </div>
-  <div class="cal"><h3 id="cm"></h3><div class="cg" id="cg"></div></div>
-  @yield('right')
-</aside>
 </div>
 <script>
 document.getElementById('theme').onclick=function(){var r=document.documentElement,d=r.dataset.theme?r.dataset.theme==='dark':matchMedia('(prefers-color-scheme:dark)').matches;r.dataset.theme=d?'light':'dark';try{localStorage.setItem('rs-theme',r.dataset.theme)}catch(e){}};
-(function(){var n=new Date(),y=n.getFullYear(),m=n.getMonth();
-document.getElementById('cm').textContent=n.toLocaleDateString('id-ID',{month:'long',year:'numeric'});
-var first=(new Date(y,m,1).getDay()+6)%7,days=new Date(y,m+1,0).getDate(),prev=new Date(y,m,0).getDate();
-var h=['Sen','Sel','Rab','Kam','Jum','Sab','Min'].map(function(d){return '<span class="h">'+d+'</span>'}).join('');
-for(var i=first-1;i>=0;i--)h+='<span class="o">'+(prev-i)+'</span>';
-for(var d=1;d<=days;d++)h+='<span class="'+(d===n.getDate()?'today':'')+'">'+d+'</span>';
-document.getElementById('cg').innerHTML=h})();
+(function(){
+ var w=document.getElementById('calw'),b=document.getElementById('calt'),now=new Date(),y=now.getFullYear(),m=now.getMonth();
+ function set(o){w.classList.toggle('open',o);b.setAttribute('aria-expanded',o);try{localStorage.setItem('rs-cal',o?'1':'0')}catch(e){}}
+ b.onclick=function(){set(!w.classList.contains('open'))};
+ try{if(localStorage.getItem('rs-cal')==='1')set(true)}catch(e){}
+ function draw(){
+  document.getElementById('cm').textContent=new Date(y,m,1).toLocaleDateString('id-ID',{month:'long',year:'numeric'});
+  var first=(new Date(y,m,1).getDay()+6)%7,days=new Date(y,m+1,0).getDate(),prev=new Date(y,m,0).getDate();
+  var h=['Sen','Sel','Rab','Kam','Jum','Sab','Min'].map(function(d){return '<span class="h">'+d+'</span>'}).join('');
+  for(var i=first-1;i>=0;i--)h+='<span class="o">'+(prev-i)+'</span>';
+  for(var d=1;d<=days;d++)h+='<span class="'+(d===now.getDate()&&m===now.getMonth()&&y===now.getFullYear()?'today':'')+'">'+d+'</span>';
+  document.getElementById('cg').innerHTML=h}
+ document.getElementById('calprev').onclick=function(){m--;if(m<0){m=11;y--}draw()};
+ document.getElementById('calnext').onclick=function(){m++;if(m>11){m=0;y++}draw()};
+ draw();
+})();
 </script>
 @stack('scripts')
 </body>

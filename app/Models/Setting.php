@@ -13,9 +13,9 @@ class Setting extends Model
     protected $guarded = [];
 
     public const DEFAULTS = [
-        'confidence_threshold' => 85,   // % ambang keyakinan TinyML (proposal: 85%)
-        'countdown_seconds' => 15,      // waktu konfirmasi petugas (proposal: 15 detik)
-        'gate_reopen_seconds' => 30,    // palang kembali terbuka setelah kereta lewat
+        'confidence_threshold' => 70,   // % ambang keyakinan TinyML (firmware Node 1: 0.70)
+        'gate_reopen_seconds' => 15,    // palang terbuka lagi setelah alert terakhir (firmware Node 2: 15000 ms)
+        'countdown_seconds' => 15,      // waktu konfirmasi petugas pada mode fail-safe (proposal; belum dipakai firmware)
     ];
 
     public static function get(string $key, $default = null)

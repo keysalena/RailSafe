@@ -4,7 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Crossing;
 use App\Models\Device;
-use App\Models\LogPerlintasan;
+use App\Models\GateLog;
 use App\Models\LogSensor;
 use App\Models\Setting;
 use Illuminate\Http\Request;
@@ -13,8 +13,7 @@ class DashboardController extends Controller
 {
     public function index(Request $request)
     {
-        $user = $request->user();
-        $crossings = Crossing::whereIn('id', $user->accessibleCrossingIds())->orderBy('code')->get();
+        $crossings = Crossing::whereIn('id', $request->user()->accessibleCrossingIds())->orderBy('code')->get();
 
         return view('dashboard', ['crossings' => $crossings, 'selected' => (int) $request->query('crossing')]);
     }
@@ -23,37 +22,52 @@ class DashboardController extends Controller
     public function summary(Request $request)
     {
         $ids = $request->user()->scopedCrossingIds((int) $request->query('crossing'));
-        $countdown = (int) Setting::get('countdown_seconds');
+        $reopen = (int) Setting::get('gate_reopen_seconds');
         $today = now()->startOfDay();
 
-        // --- kejadian hari ini ---
-        $events = LogPerlintasan::with('kontrol')->whereIn('crossing_id', $ids)
-            ->where('detected_at', '>=', $today)->orderBy('detected_at')->get();
-        $k = $events->pluck('kontrol')->filter();
-        $manual = $k->where('control_mode', 'MANUAL')->count();
-        $auto = $k->where('control_mode', 'AUTO')->count();
+        // --- penutupan hari ini ---
+        $closedToday = GateLog::whereIn('crossing_id', $ids)->where('gate_action', 'CLOSED')
+            ->where('logged_at', '>=', $today)->get();
+        $auto = $closedToday->where('trigger_type', 'AUTOMATIC');
+        $manual = $closedToday->where('trigger_type', 'MANUAL');
+        $confs = $auto->pluck('confidence_score')->filter(fn ($v) => $v !== null);
 
         // --- per jam: hari ini vs rata-rata 7 hari sebelumnya ---
         $todayHours = array_fill(0, 24, 0);
-        foreach ($events as $e) $todayHours[$e->detected_at->hour]++;
+        foreach ($closedToday as $e) $todayHours[$e->logged_at->hour]++;
         $avg = array_fill(0, 24, 0.0);
-        LogPerlintasan::whereIn('crossing_id', $ids)
-            ->whereBetween('detected_at', [$today->copy()->subDays(7), $today])->get(['detected_at'])
-            ->each(function ($e) use (&$avg) { $avg[$e->detected_at->hour] += 1 / 7; });
+        GateLog::whereIn('crossing_id', $ids)->where('gate_action', 'CLOSED')
+            ->whereBetween('logged_at', [$today->copy()->subDays(7), $today])->get(['logged_at'])
+            ->each(function ($e) use (&$avg) { $avg[$e->logged_at->hour] += 1 / 7; });
 
         // --- 7 hari terakhir ---
-        $since = $today->copy()->subDays(6);
-        $week = LogPerlintasan::with('kontrol')->whereIn('crossing_id', $ids)
-            ->where('detected_at', '>=', $since)->get()->groupBy(fn ($e) => $e->detected_at->toDateString());
+        $week = GateLog::whereIn('crossing_id', $ids)->where('gate_action', 'CLOSED')
+            ->where('logged_at', '>=', $today->copy()->subDays(6))->get()
+            ->groupBy(fn ($e) => $e->logged_at->toDateString());
         $weekly = [];
         for ($i = 6; $i >= 0; $i--) {
             $d = $today->copy()->subDays($i);
             $rows = $week->get($d->toDateString(), collect());
             $weekly[] = [
                 'label' => $d->locale('id')->isoFormat('ddd'),
-                'total' => $rows->count(),
-                'no_response' => $rows->filter(fn ($r) => $r->kontrol && $r->kontrol->guard_response === 'NO_RESPONSE')->count(),
+                'auto' => $rows->where('trigger_type', 'AUTOMATIC')->count(),
+                'manual' => $rows->where('trigger_type', 'MANUAL')->count(),
             ];
+        }
+
+        // --- status palang (perkiraan dari log terakhir; firmware belum mengirim log saat palang terbuka otomatis) ---
+        $last = GateLog::whereIn('crossing_id', $ids)->orderByDesc('logged_at')->orderByDesc('id')->first();
+        $lastAuto = GateLog::whereIn('crossing_id', $ids)->where('trigger_type', 'AUTOMATIC')->where('gate_action', 'CLOSED')
+            ->orderByDesc('logged_at')->first();
+        $gate = ['state' => 'OPEN', 'mode' => null, 'remaining' => null, 'last_confidence' => $lastAuto?->confidence_score];
+        if ($last && $last->gate_action === 'CLOSED') {
+            if ($last->trigger_type === 'MANUAL') {
+                $gate['state'] = 'CLOSED';
+                $gate['mode'] = 'MANUAL';
+            } else {
+                $left = $reopen - (now()->timestamp - $last->logged_at->timestamp);
+                if ($left > 0) $gate = ['state' => 'CLOSED', 'mode' => 'AUTO', 'remaining' => $left] + $gate;
+            }
         }
 
         // --- perangkat dan sensor ---
@@ -61,11 +75,9 @@ class DashboardController extends Controller
         $n1 = $devices->firstWhere('type', 'SENSOR_NODE');
         $n2 = $devices->firstWhere('type', 'GATE_CONTROLLER');
         $live = [
-            'ml_label' => $n1 && $n1->status === 'ACTIVE' ? $n1->ml_label : null,
-            'ml_confidence' => $n1?->ml_confidence !== null ? (float) $n1->ml_confidence : null,
-            'battery' => $n1?->battery_level,
             'rssi' => $n2?->rssi ?? $n1?->rssi,
             'distance_cm' => $n2?->distance_cm !== null ? (float) $n2->distance_cm : null,
+            'battery' => $n1?->battery_level,
         ];
         $sensors = LogSensor::whereIn('device_id', $devices->pluck('id'))
             ->orderByDesc('reported_at')->orderByDesc('id')->get()
@@ -76,47 +88,29 @@ class DashboardController extends Controller
                 'health' => $s->health_status, 'detail' => $s->detail,
             ]);
 
-        // --- alarm: kereta terdeteksi, belum ada respons/aksi, masih dalam jendela hitung mundur ---
-        $alert = null;
-        $open = LogPerlintasan::whereIn('crossing_id', $ids)->doesntHave('kontrol')
-            ->where('detected_at', '>=', now()->subSeconds($countdown + 3))->orderByDesc('detected_at')->first();
-        if ($open) {
-            $left = max(0, $countdown - (now()->timestamp - $open->detected_at->timestamp));
-            $alert = ['event_id' => $open->event_id, 'confidence' => $open->confidence, 'remaining' => $left, 'total' => $countdown];
-        }
-
-        // --- tabel terbaru dan daftar perlu ditinjau ---
-        $recent = LogPerlintasan::with('kontrol')->whereIn('crossing_id', $ids)->orderByDesc('detected_at')->limit(8)->get()
+        $recent = GateLog::whereIn('crossing_id', $ids)->orderByDesc('logged_at')->orderByDesc('id')->limit(8)->get()
             ->map(fn ($e) => [
                 'id' => $e->event_id, 'url' => route('events.show', $e->id),
-                'time' => $e->detected_at->format('H:i'), 'date' => $e->detected_at->format('d/m'),
-                'confidence' => $e->confidence, 'status' => $e->kontrol->status_label ?? 'TRAIN_INBOUND',
-                'mode' => $e->kontrol->control_mode ?? null, 'guard' => $e->kontrol->guard_response ?? null,
-                'response_ms' => $e->kontrol->response_time_ms ?? null, 'obstacle' => $e->kontrol->obstacle_detected ?? null,
+                'date' => $e->logged_at->format('d/m'), 'time' => $e->logged_at->format('H:i'),
+                'trigger' => $e->trigger_type, 'status' => $e->status_text, 'tone' => $e->tone,
+                'confidence' => $e->confidence_score, 'notes' => $e->notes,
             ]);
-        $review = LogPerlintasan::with('kontrol')->whereIn('crossing_id', $ids)
-            ->whereHas('kontrol', fn ($q) => $q->where('guard_response', 'NO_RESPONSE'))
-            ->orderByDesc('detected_at')->limit(4)->get()
-            ->map(fn ($e) => ['id' => $e->event_id, 'url' => route('events.show', $e->id),
-                'date' => $e->detected_at->format('d M'), 'time' => $e->detected_at->format('H:i'), 'status' => $e->kontrol->status_label]);
 
         return response()->json([
             'now_hour' => now()->hour,
             'kpi' => [
-                'total' => $events->count(), 'manual' => $manual, 'auto' => $auto,
-                'no_response' => $k->where('guard_response', 'NO_RESPONSE')->count(),
-                'obstacle' => $k->where('obstacle_detected', true)->count(),
-                'manual_pct' => ($manual + $auto) ? (int) round($manual / ($manual + $auto) * 100) : 0,
+                'total' => $closedToday->count(), 'auto' => $auto->count(), 'manual' => $manual->count(),
+                'avg_conf' => $confs->count() ? round($confs->avg(), 1) : null,
             ],
             'hourly' => ['today' => $todayHours, 'avg' => array_map(fn ($v) => round($v, 2), $avg)],
             'weekly' => $weekly,
+            'gate' => $gate, 'live' => $live,
             'devices' => $devices->map(fn ($d) => [
                 'code' => $d->device_code, 'name' => $d->name, 'type' => $d->type, 'status' => $d->status,
                 'seen_s' => $d->last_seen_at ? now()->timestamp - $d->last_seen_at->timestamp : null,
                 'battery' => $d->battery_level, 'crossing' => $d->crossing->code,
             ]),
-            'sensors' => $sensors, 'live' => $live, 'alert' => $alert,
-            'recent' => $recent, 'review' => $review,
+            'sensors' => $sensors, 'recent' => $recent,
         ]);
     }
 }

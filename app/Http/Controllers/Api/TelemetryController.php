@@ -4,8 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Device;
-use App\Models\LogKontrol;
-use App\Models\LogPerlintasan;
+use App\Models\GateLog;
 use App\Models\LogSensor;
 use App\Models\Setting;
 use Carbon\Carbon;
@@ -14,9 +13,51 @@ use Illuminate\Http\Request;
 class TelemetryController extends Controller
 {
     /**
-     * POST /api/telemetry
-     * Dipanggil Node 2: saat sinyal kereta diterima (TRAIN_INBOUND) dan saat siklus kontrol selesai.
-     * Idempoten: event_id yang sama tidak membuat baris ganda, sehingga aman dikirim ulang.
+     * POST /api/gate-log : format yang dikirim firmware Node2.ino saat ini.
+     * Body: {"trigger_type":"AUTOMATIC|MANUAL","confidence_score":0.93,"notes":"..."}
+     */
+    public function gateLog(Request $request)
+    {
+        /** @var Device $device */
+        $device = $request->attributes->get('device');
+
+        $data = $request->validate([
+            'trigger_type' => 'required|in:AUTOMATIC,MANUAL',
+            'confidence_score' => 'nullable|numeric|min:0|max:100',
+            'notes' => 'nullable|string|max:255',
+            'gate_action' => 'nullable|in:CLOSED,OPENED,HELD',
+        ]);
+
+        $notes = $data['notes'] ?? null;
+        // firmware hanya mengirim satu jenis log untuk tutup dan buka; bedanya ada di teks notes
+        $action = $data['gate_action'] ?? ($notes && preg_match('/dibuka/i', $notes) ? 'OPENED' : 'CLOSED');
+
+        $score = $data['confidence_score'] ?? null;
+        if ($data['trigger_type'] === 'MANUAL') {
+            $score = null;                       // firmware mengirim 1.0 sebagai nilai pengisi untuk tombol manual
+        } elseif ($score !== null && $score <= 1) {
+            $score = $score * 100;               // firmware mengirim skala 0-1
+        }
+
+        $log = GateLog::create([
+            'event_id' => sprintf('GL-%s-%04d', now()->format('ymd-His'), random_int(0, 9999)),
+            'crossing_id' => $device->crossing_id,
+            'device_id' => $device->id,
+            'trigger_type' => $data['trigger_type'],
+            'gate_action' => $action,
+            'confidence_score' => $score,
+            'notes' => $notes,
+            'logged_at' => now(),   // ESP32 tidak punya jam; pakai waktu server
+        ]);
+
+        $device->update(['last_seen_at' => now(), 'connection_status' => 'ACTIVE']);
+
+        return response()->json(['ok' => true, 'id' => $log->id, 'event_id' => $log->event_id], 201);
+    }
+
+    /**
+     * POST /api/telemetry : format lengkap sesuai proposal (respons petugas, rintangan).
+     * Idempoten berdasarkan event_id.
      */
     public function store(Request $request)
     {
@@ -25,54 +66,39 @@ class TelemetryController extends Controller
 
         $data = $request->validate([
             'event_id' => 'required|string|max:40',
-            'event_type' => 'required|in:TRAIN_INBOUND,MANUAL_OK,FAIL_SAFE_AUTOGATE,CRITICAL_OBSTACLE',
-            'control_mode' => 'required_unless:event_type,TRAIN_INBOUND|nullable|in:MANUAL,AUTO',
-            'guard_response' => 'required_unless:event_type,TRAIN_INBOUND|nullable|in:CONFIRMED,NO_RESPONSE',
+            'event_type' => 'required|in:MANUAL_OK,FAIL_SAFE_AUTOGATE,CRITICAL_OBSTACLE',
+            'control_mode' => 'required|in:MANUAL,AUTO',
+            'guard_response' => 'nullable|in:CONFIRMED,NO_RESPONSE',
             'response_time_ms' => 'nullable|integer|min:0',
             'obstacle_detected' => 'nullable|boolean',
-            'sensor_status' => 'nullable|string|max:30',
             'confidence' => 'nullable|numeric|between:0,100',
+            'notes' => 'nullable|string|max:255',
             'event_timestamp' => 'required|date',
-            'device_id' => 'nullable|string|max:30', // diabaikan: perangkat dikenali dari token
+            'device_id' => 'nullable|string|max:30',
+            'sensor_status' => 'nullable|string|max:30',
         ]);
 
-        $ts = Carbon::parse($data['event_timestamp']);
-
-        $event = LogPerlintasan::firstOrCreate(
-            ['event_id' => $data['event_id']],
-            [
-                'crossing_id' => $device->crossing_id,
-                'device_id' => $device->id,
-                'detected_at' => $ts,
-                'confidence' => $data['confidence'] ?? null,
-            ]
-        );
-
-        if ($event->crossing_id !== $device->crossing_id) {
+        $existing = GateLog::where('event_id', $data['event_id'])->first();
+        if ($existing && $existing->crossing_id !== $device->crossing_id) {
             return response()->json(['message' => 'event_id sudah dipakai pos lain'], 409);
         }
 
-        if ($data['event_type'] !== 'TRAIN_INBOUND') {
-            $auto = $data['control_mode'] === 'AUTO';
-            LogKontrol::updateOrCreate(
-                ['event_id' => $event->event_id],
-                [
-                    'device_id' => $device->id,
-                    'control_mode' => $data['control_mode'],
-                    'guard_response' => $data['guard_response'],
-                    'response_time_ms' => $data['response_time_ms'] ?? null,
-                    'obstacle_checked' => $auto,
-                    'obstacle_detected' => $auto ? (bool) ($data['obstacle_detected'] ?? false) : null,
-                    'action' => LogKontrol::ACTIONS[$data['event_type']],
-                    'emergency_alarm' => $data['event_type'] === 'CRITICAL_OBSTACLE',
-                    'status_label' => $data['event_type'],
-                    'sensor_status' => $data['sensor_status'] ?? null,
-                    'completed_at' => $ts,
-                ]
-            );
-        }
+        $log = GateLog::updateOrCreate(['event_id' => $data['event_id']], [
+            'crossing_id' => $device->crossing_id,
+            'device_id' => $device->id,
+            'trigger_type' => $data['control_mode'] === 'AUTO' ? 'AUTOMATIC' : 'MANUAL',
+            'gate_action' => $data['event_type'] === 'CRITICAL_OBSTACLE' ? 'HELD' : 'CLOSED',
+            'confidence_score' => $data['confidence'] ?? null,
+            'notes' => $data['notes'] ?? null,
+            'guard_response' => $data['guard_response'] ?? null,
+            'response_time_ms' => $data['response_time_ms'] ?? null,
+            'obstacle_detected' => $data['obstacle_detected'] ?? null,
+            'logged_at' => Carbon::parse($data['event_timestamp']),
+        ]);
 
-        return response()->json(['ok' => true, 'event_id' => $event->event_id], $event->wasRecentlyCreated ? 201 : 200);
+        $device->update(['last_seen_at' => now(), 'connection_status' => 'ACTIVE']);
+
+        return response()->json(['ok' => true, 'event_id' => $log->event_id], $log->wasRecentlyCreated ? 201 : 200);
     }
 
     /**

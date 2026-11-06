@@ -7,41 +7,26 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration {
     public function up(): void
     {
-        // satu baris per kejadian deteksi kereta
-        Schema::create('log_perlintasan', function (Blueprint $t) {
-            $t->id();
-            $t->string('event_id', 40)->unique();        // mencegah pencatatan ganda saat kirim ulang
-            $t->foreignId('crossing_id')->constrained()->cascadeOnDelete();
-            $t->foreignId('device_id')->constrained()->cascadeOnDelete();
-            $t->timestamp('detected_at');
-            $t->decimal('confidence', 5, 2)->nullable();  // hasil TinyML (%)
-            $t->unsignedSmallInteger('detection_count')->default(1);
-            $t->boolean('train_passed_confirmed')->nullable(); // kosong sampai ada konfirmasi kereta lewat
-            $t->timestamps();
-            $t->index(['crossing_id', 'detected_at']);
-        });
-
-        // respons petugas dan tindakan palang
-        Schema::create('log_kontrol', function (Blueprint $t) {
+        // Satu baris per aksi palang. Kolom inti sama dengan payload firmware Node 2:
+        // trigger_type, confidence_score, notes. Kolom lain opsional (untuk alur fail-safe di proposal).
+        Schema::create('gate_logs', function (Blueprint $t) {
             $t->id();
             $t->string('event_id', 40)->unique();
-            $t->foreign('event_id')->references('event_id')->on('log_perlintasan')->cascadeOnDelete();
+            $t->foreignId('crossing_id')->constrained()->cascadeOnDelete();
             $t->foreignId('device_id')->constrained()->cascadeOnDelete();
-            $t->string('control_mode', 10);               // MANUAL | AUTO
-            $t->string('guard_response', 15);             // CONFIRMED | NO_RESPONSE
+            $t->string('trigger_type', 10);               // AUTOMATIC | MANUAL
+            $t->string('gate_action', 10)->default('CLOSED'); // CLOSED | OPENED | HELD (ditahan karena rintangan)
+            $t->decimal('confidence_score', 5, 2)->nullable(); // persen, hanya untuk AUTOMATIC
+            $t->string('notes')->nullable();              // catatan dari firmware
+            $t->string('guard_response', 15)->nullable(); // opsional: CONFIRMED | NO_RESPONSE
             $t->unsignedInteger('response_time_ms')->nullable();
-            $t->boolean('obstacle_checked')->default(false);
             $t->boolean('obstacle_detected')->nullable();
-            $t->string('action', 30);                     // GATE_CLOSED_MANUAL | GATE_CLOSED_AUTO | GATE_HELD_OBSTACLE
-            $t->boolean('emergency_alarm')->default(false);
-            $t->string('status_label', 30);               // MANUAL_OK | FAIL_SAFE_AUTOGATE | CRITICAL_OBSTACLE
-            $t->string('sensor_status', 30)->nullable();
-            $t->timestamp('completed_at')->nullable();
+            $t->timestamp('logged_at');
             $t->timestamps();
-            $t->index(['control_mode', 'guard_response']);
+            $t->index(['crossing_id', 'logged_at']);
+            $t->index(['trigger_type', 'gate_action']);
         });
 
-        // status dan kesehatan sensor (dipisah: state vs health)
         Schema::create('log_sensor', function (Blueprint $t) {
             $t->id();
             $t->foreignId('device_id')->constrained()->cascadeOnDelete();
@@ -55,7 +40,7 @@ return new class extends Migration {
 
         Schema::create('event_notes', function (Blueprint $t) {
             $t->id();
-            $t->string('event_id', 40)->index();
+            $t->foreignId('gate_log_id')->constrained('gate_logs')->cascadeOnDelete();
             $t->foreignId('user_id')->constrained()->cascadeOnDelete();
             $t->text('note');
             $t->timestamps();
@@ -80,7 +65,7 @@ return new class extends Migration {
 
     public function down(): void
     {
-        foreach (['settings', 'audit_logs', 'event_notes', 'log_sensor', 'log_kontrol', 'log_perlintasan'] as $tb) {
+        foreach (['settings', 'audit_logs', 'event_notes', 'log_sensor', 'gate_logs'] as $tb) {
             Schema::dropIfExists($tb);
         }
     }
