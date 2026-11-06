@@ -55,7 +55,7 @@ void setup() {
   mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
 
   // 2. Inisialisasi Model TinyML
-  if (!ml.begin(g_sigap_model)) {
+  if (!ml.begin(g_RailSafe_model)) {
     Serial.println("❌ ERROR: Gagal memuat Model TinyML!");
     while (1) delay(10);
   }

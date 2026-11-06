@@ -1,5 +1,5 @@
 /*
- * S.I.G.A.P - Node 2 (Pos PJL Receiver + Gate Controller + HMI)
+ * RailSafe - Node 2 (Pos PJL Receiver + Gate Controller + HMI)
  * Hardware: ESP32, LoRa Ra-02, LCD I2C 16x2, Servo MG996R, HC-SR04, Buzzer, Arcade Button
  */
 
@@ -28,8 +28,10 @@ const char* LARAVEL_API   = "http://192.168.1.10:8000/api/gate-log"; // IP Lapto
 #define BUZZER_PIN 15
 #define BUTTON_PIN 4  // Arcade Button (Manual Override)
 
-#define TRIG_PIN  12
-#define ECHO_PIN  27
+#define TRIG_PIN_1  12
+#define ECHO_PIN_1  27
+#define TRIG_PIN_2  26  // Sesuaikan dengan pin TRIG sensor ultrasonik kedua
+#define ECHO_PIN_2  25  // Sesuaikan dengan pin ECHO sensor ultrasonik kedua
 
 // ==================== INISIALISASI OBJEK ====================
 LiquidCrystal_I2C lcd(0x27, 16, 2);
@@ -52,8 +54,10 @@ void setup() {
   // 1. Setup Pin Input/Output
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(BUTTON_PIN, INPUT_PULLUP);
-  pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT);
+  pinMode(TRIG_PIN_1, OUTPUT);
+  pinMode(ECHO_PIN_1, INPUT);
+  pinMode(TRIG_PIN_2, OUTPUT);
+  pinMode(ECHO_PIN_2, INPUT);
   digitalWrite(BUZZER_PIN, LOW);
 
   // 2. Setup Servo MG996R
@@ -65,7 +69,7 @@ void setup() {
   // 3. Setup LCD I2C
   lcd.init();
   lcd.backlight();
-  tampilkanStatusLCD("S.I.G.A.P READY", "STATUS: AMAN");
+  tampilkanStatusLCD("RailSafe READY", "STATUS: AMAN");
 
   // 4. Setup WiFi (Opsional untuk kirim telemetri ke Laravel)
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -107,8 +111,8 @@ void loop() {
     }
     Serial.println("📥 LoRa Received: " + incomingMsg);
 
-    // Parsing format sinyal: "SIGAP:ALERT_KERETA:<confidence>"
-    if (incomingMsg.startsWith("SIGAP:ALERT_KERETA")) {
+    // Parsing format sinyal: "RailSafe:ALERT_KERETA:<confidence>"
+    if (incomingMsg.startsWith("RailSafe:ALERT_KERETA")) {
       float confidence = 0.0;
       int lastColon = incomingMsg.lastIndexOf(':');
       if (lastColon != -1) {
@@ -127,7 +131,7 @@ void loop() {
     if (millis() - lastTrainAlertTime > AUTO_RESET_TIMEOUT) {
       Serial.println("🟢 Waktu penutupan selesai. Membuka palang kembali...");
       bukaPalang();
-      tampilkanStatusLCD("S.I.G.A.P READY", "STATUS: AMAN");
+      tampilkanStatusLCD("RailSafe READY", "STATUS: AMAN");
     }
   }
 
@@ -144,11 +148,21 @@ void loop() {
 
 void tutupPalangOtomatis(float confidence) {
   // Cek Keberadaan Kendaraan Terjebak di Bawah Palang (Fail-Safe HC-SR04)
-  long jarak = ukurJarakHCSR04();
-  if (jarak > 0 && jarak < 15) { // Ada objek dekat (< 15 cm)
-    Serial.println("⚠️ WARN: Kendaraan terdeteksi di bawah palang! Penutupan ditunda 1 detik.");
+  long jarak1 = ukurJarakHCSR04(TRIG_PIN_1, ECHO_PIN_1);
+  long jarak2 = ukurJarakHCSR04(TRIG_PIN_2, ECHO_PIN_2);
+  bool adaObjek = (jarak1 > 0 && jarak1 < 15) || (jarak2 > 0 && jarak2 < 15);
+  if (adaObjek) {
+    Serial.printf("WARN: Objek terdeteksi; sensor 1: %ld cm, sensor 2: %ld cm. Cek ulang dalam 1 detik.\n", jarak1, jarak2);
     tampilkanStatusLCD("AWAS KENDARAAN!", "MENUNGGU CLEAR");
     delay(1000);
+
+    jarak1 = ukurJarakHCSR04(TRIG_PIN_1, ECHO_PIN_1);
+    jarak2 = ukurJarakHCSR04(TRIG_PIN_2, ECHO_PIN_2);
+    if ((jarak1 > 0 && jarak1 < 15) || (jarak2 > 0 && jarak2 < 15)) {
+      Serial.printf("WARN: Area masih terhalang; sensor 1: %ld cm, sensor 2: %ld cm. Palang tetap terbuka.\n", jarak1, jarak2);
+      tampilkanStatusLCD("AREA TERHALANG", "PALANG TETAP BUKA");
+      return;
+    }
   }
 
   isGateClosed = true;
@@ -187,14 +201,14 @@ void cekTombolManual() {
   }
 }
 
-long ukurJarakHCSR04() {
-  digitalWrite(TRIG_PIN, LOW);
+long ukurJarakHCSR04(int trigPin, int echoPin) {
+  digitalWrite(trigPin, LOW);
   delayMicroseconds(2);
-  digitalWrite(TRIG_PIN, HIGH);
+  digitalWrite(trigPin, HIGH);
   delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
+  digitalWrite(trigPin, LOW);
   
-  long duration = pulseIn(ECHO_PIN, HIGH, 20000); // Timeout 20ms
+  long duration = pulseIn(echoPin, HIGH, 20000); // Timeout 20ms
   if (duration == 0) return 999;
   return duration * 0.034 / 2;
 }
