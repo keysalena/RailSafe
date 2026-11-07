@@ -6,14 +6,17 @@
 <title>Masuk | RailSafe</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="{{ asset('css/railsafe.css') }}">
+<link rel="icon" href="{{ asset('images/favicon.png') }}" type="image/png">
 <script src="{{ asset('js/login.js') }}" defer></script>
 </head>
 <body class="login-page">
 <main class="login-shell">
   <section class="login-intro" aria-labelledby="login-intro-title">
     <div class="login-brand">
-      <i aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l-2 18M18 3l2 18M5 8h14M4.5 14h15"/></svg></i>
-      <span>RailSafe</span>
+    <i>
+      <img src="{{ asset('images/favicon.png') }}" alt="RailSafe Logo" style="width: 46px; height: 46px; object-fit: contain;">
+    </i>
+    <span>RailSafe</span>
     </div>
     <div class="login-intro-copy">
       <p class="login-kicker">Sistem pemantauan perlintasan</p>
@@ -77,8 +80,6 @@
           <span class="login-spinner" aria-hidden="true"></span>
         </button>
       </form>
-      <div class="login-card-divider"><span></span><small>atau</small><span></span></div>
-      <p class="login-help"><svg aria-hidden="true" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>Akses dengan akun terdaftar</p>
     </div>
   </section>
 </main>

@@ -2,22 +2,42 @@
 @section('title', 'Dashboard')
 
 @section('content')
-<div class="top">
+<div class="tb">
   <h1>Dashboard</h1>
-  <div class="live-clock" id="live-clock" aria-live="polite">
-    <span class="live-clock-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
-    <span class="live-clock-time" id="clock-time">--:--:-- WIB</span>
-    <span class="live-clock-date" id="clock-date">--</span>
+
+  <div class="tb-clock-wrap">
+    <button class="live-clock" id="cal-btn" type="button" aria-expanded="false" aria-controls="cal-popup" title="Klik untuk membuka kalender">
+      <span class="live-clock-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+      <span class="live-clock-time" id="clock-time">--:--:-- WIB</span>
+      <!-- <span class="live-clock-sep" aria-hidden="true"></span> -->
+      <span class="live-clock-date" id="clock-date">--</span>
+    </button>
+    <div class="tb-pop" id="cal-popup" role="dialog" aria-label="Kalender">
+      <div class="tb-ch">
+        <button id="tbprev" type="button" aria-label="Bulan sebelumnya">&lsaquo;</button>
+        <b id="tbcm"></b>
+        <button id="tbnext" type="button" aria-label="Bulan berikutnya">&rsaquo;</button>
+      </div>
+      <div class="cg" id="tbcg"></div>
+    </div>
   </div>
-  @if($crossings->count() > 1)
-  <form method="GET" action="{{ route('dashboard') }}" class="f" style="min-width:200px">
-    <select name="crossing" onchange="this.form.submit()" aria-label="Pilih pos">
-      <option value="">Semua pos</option>
-      @foreach($crossings as $c)<option value="{{ $c->id }}" @selected($selected === $c->id)>{{ $c->code }}</option>@endforeach
-    </select>
-  </form>
-  @endif
-  <button class="btn ghost" id="snd" type="button">Suara alarm: mati</button>
+
+  <div class="tb-actions">
+    @if($crossings->count() > 1)
+    <form method="GET" action="{{ route('dashboard') }}">
+      <select name="crossing" class="tb-sel" onchange="this.form.submit()" aria-label="Pilih pos">
+        <option value="">Semua pos</option>
+        @foreach($crossings as $c)<option value="{{ $c->id }}" @selected($selected === $c->id)>{{ $c->code }}</option>@endforeach
+      </select>
+    </form>
+    @endif
+
+    <button class="tb-alarm" id="snd" type="button" aria-pressed="false" title="Klik untuk menyalakan atau mematikan bunyi alarm saat palang menutup">
+      <svg class="off-i" viewBox="0 0 24 24"><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M22 9l-6 6M16 9l6 6"/></svg>
+      <svg class="on-i" viewBox="0 0 24 24"><path d="M11 5L6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 010 7M18.5 5.5a9 9 0 010 13"/></svg>
+      <span>Suara alarm</span><span class="st" id="snd-st">Mati</span>
+    </button>
+  </div>
 </div>
 
 <div class="abn" id="abn" role="alert"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.01"/></svg><div><div id="abm">Palang ditutup</div><small id="abt"></small></div><big id="abc"></big></div>
@@ -92,6 +112,69 @@
 @endsection
 
 @push('scripts')
+<style>
+/* ===== navbar dashboard: judul kiri, jam di tengah (klik = kalender), aksi kanan ===== */
+.tb{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;margin-bottom:18px}
+.tb h1{font-size:22px;font-weight:600}
+.tb-actions{justify-self:end;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+
+/* pil jam dan tanggal, satu baris memanjang; bisa diklik untuk membuka kalender */
+.tb-clock-wrap{position:relative;justify-self:center}
+.tb .live-clock{display:flex;align-items:center;gap:12px;padding:10px 18px;background:var(--card);border:1px solid transparent;border-radius:14px;color:var(--ink);font:inherit;cursor:pointer;box-shadow:0 2px 10px rgba(26,35,66,.07);transition:border-color .15s,box-shadow .15s}
+.tb .live-clock:hover{border-color:var(--blue);box-shadow:0 4px 14px rgba(17,99,240,.16)}
+.tb .live-clock:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+.tb .live-clock[aria-expanded="true"]{border-color:var(--blue)}
+.tb .live-clock-icon{display:grid;place-items:center;flex:none}
+.tb .live-clock-icon svg{width:18px;height:18px;stroke:var(--blue);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.tb .live-clock-time{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:14px;font-weight:700;white-space:nowrap}
+.tb .live-clock-sep{width:1px;height:20px;background:var(--line);flex:none}
+.tb .live-clock-date{font-size:13px;font-weight:500;color:var(--muted);white-space:nowrap}
+
+/* kalender muncul di bawah pil jam */
+.tb-pop{display:none;position:absolute;top:calc(100% + 8px);left:50%;transform:translateX(-50%);z-index:50;width:272px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;box-shadow:0 12px 34px rgba(26,35,66,.22)}
+.tb-pop.on{display:block}
+.tb-ch{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.tb-ch b{font-size:14px;font-weight:600}
+.tb-ch button{width:28px;height:28px;border:0;border-radius:8px;background:var(--panel);color:var(--ink);cursor:pointer;font-size:16px;line-height:1}
+
+.tb-sel,.tb-alarm{height:44px;border-radius:12px;font:inherit}
+.tb-sel:focus-visible,.tb-alarm:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+
+/* pilih pos */
+.tb-sel{padding:0 36px 0 14px;background-color:var(--card);border:1px solid var(--line);color:var(--ink);cursor:pointer;-webkit-appearance:none;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%237b86a2' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 12px center;background-size:14px}
+
+/* tombol suara alarm */
+.tb-alarm{display:inline-flex;align-items:center;gap:9px;padding:0 12px 0 14px;border:1.5px solid var(--blue);background:transparent;color:var(--blue);font-weight:600;font-size:13px;cursor:pointer;transition:background .15s,color .15s,box-shadow .15s}
+.tb-alarm:hover{background:var(--blue2)}
+.tb-alarm:active{transform:translateY(1px)}
+.tb-alarm svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.tb-alarm .on-i{display:none}
+.tb-alarm .st{font-size:11px;font-weight:600;padding:2px 9px;border-radius:99px;background:var(--blue2);color:var(--blue)}
+.tb-alarm[aria-pressed="true"]{background:var(--blue);color:#fff;box-shadow:0 4px 14px rgba(17,99,240,.35)}
+.tb-alarm[aria-pressed="true"]:hover{background:var(--blue)}
+.tb-alarm[aria-pressed="true"] .st{background:rgba(255,255,255,.22);color:#fff}
+.tb-alarm[aria-pressed="true"] .on-i{display:block}
+.tb-alarm[aria-pressed="true"] .off-i{display:none}
+
+/* layar sedang: jam turun ke baris sendiri, tetap di tengah */
+@media (max-width:1200px){
+  .tb{grid-template-columns:1fr auto;grid-template-areas:"title actions" "clock clock"}
+  .tb h1{grid-area:title}
+  .tb-actions{grid-area:actions}
+  .tb-clock-wrap{grid-area:clock}
+}
+/* HP */
+@media (max-width:640px){
+  .tb{grid-template-columns:1fr;grid-template-areas:"title" "clock" "actions"}
+  .tb-actions{justify-self:stretch}
+  .tb .live-clock{padding:9px 14px;gap:10px}
+  .tb .live-clock-date{font-size:12px}
+  .tb-pop{width:min(272px,calc(100vw - 48px))}
+}
+@media (prefers-reduced-motion:reduce){.tb .live-clock,.tb-alarm{transition:none}}
+</style>
 <script>
 const SUMMARY_URL=@json(route('dashboard.summary', array_filter(['crossing' => $selected])));
 const $=id=>document.getElementById(id);
@@ -100,7 +183,7 @@ const DS={ACTIVE:['Aktif','t-ok'],DISCONNECTED:['Terputus','t-bad'],FAULT:['Gang
 const SN={MPU6050:'MPU6050 (getaran rel)',LORA:'Modul LoRa Ra-02',ULTRASONIC_1:'Ultrasonik HC-SR04 #1',ULTRASONIC_2:'Ultrasonik HC-SR04 #2',SERVO:'Servo palang'};
 let soundOn=false,ac=null;
 
-$('snd').onclick=()=>{soundOn=!soundOn;$('snd').textContent='Suara alarm: '+(soundOn?'hidup':'mati');if(soundOn)beep()};
+$('snd').onclick=()=>{soundOn=!soundOn;$('snd').setAttribute('aria-pressed',soundOn);$('snd-st').textContent=soundOn?'Hidup':'Mati';if(soundOn)beep()};
 function beep(){if(!soundOn)return;try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();const o=ac.createOscillator(),g=ac.createGain();o.type='square';o.frequency.value=880;g.gain.value=.08;o.connect(g);g.connect(ac.destination);o.start();o.stop(ac.currentTime+.25)}catch(e){}}
 
 function smooth(p){let d='M'+p[0][0]+','+p[0][1];for(let i=0;i<p.length-1;i++){const p0=p[i-1]||p[i],p1=p[i],p2=p[i+1],p3=p[i+2]||p2;d+=' C'+(p1[0]+(p2[0]-p0[0])/6)+','+(p1[1]+(p2[1]-p0[1])/6)+' '+(p2[0]-(p3[0]-p1[0])/6)+','+(p2[1]-(p3[1]-p1[1])/6)+' '+p2[0]+','+p2[1]}return d}
@@ -152,15 +235,38 @@ async function load(){let next=3000;
   if(r.status===401||r.status===419){location.href='{{ route('login') }}';return}
   const d=await r.json();render(d);if(d.gate.state==='CLOSED')next=1000}catch(e){next=5000}
  setTimeout(load,next)}
+
+/* jam dan tanggal selalu dalam WIB, apa pun zona waktu perangkat */
+const TZ={timeZone:'Asia/Jakarta'};
+const jkt=()=>new Date(new Date().toLocaleString('en-US',TZ));
 (function updateClock(){
-  const now = new Date();
-  const timeStr = now.toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit', second:'2-digit'}) + ' WIB';
-  const dateStr = now.toLocaleDateString('id-ID', {weekday:'short', day:'numeric', month:'short', year:'numeric'});
-  const tEl = $('clock-time'), dEl = $('clock-date');
-  if(tEl) tEl.textContent = timeStr;
-  if(dEl) dEl.textContent = dateStr;
-  setTimeout(updateClock, 1000);
+  const now=new Date();
+  $('clock-time').textContent=now.toLocaleTimeString('id-ID',{...TZ,hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})+' WIB';
+  $('clock-date').textContent=now.toLocaleDateString('id-ID',{...TZ,weekday:'short',day:'numeric',month:'short',year:'numeric'});
+  setTimeout(updateClock,1000);
+})();
+
+(function initCalendar(){
+  const pop=$('cal-popup'),btn=$('cal-btn'),today=jkt();
+  let y=today.getFullYear(),m=today.getMonth();
+
+  const setOpen=o=>{pop.classList.toggle('on',o);btn.setAttribute('aria-expanded',o)};
+  btn.onclick=e=>{e.stopPropagation();setOpen(!pop.classList.contains('on'))};
+  document.addEventListener('click',e=>{if(!btn.contains(e.target)&&!pop.contains(e.target))setOpen(false)});
+  document.addEventListener('keydown',e=>{if(e.key==='Escape')setOpen(false)});
+
+  function draw(){
+    $('tbcm').textContent=new Date(y,m,1).toLocaleDateString('id-ID',{month:'long',year:'numeric'});
+    const first=(new Date(y,m,1).getDay()+6)%7,days=new Date(y,m+1,0).getDate(),prev=new Date(y,m,0).getDate();
+    let h=['Sen','Sel','Rab','Kam','Jum','Sab','Min'].map(d=>`<span class="h">${d}</span>`).join('');
+    for(let i=first-1;i>=0;i--)h+=`<span class="o">${prev-i}</span>`;
+    for(let d=1;d<=days;d++)h+=`<span class="${d===today.getDate()&&m===today.getMonth()&&y===today.getFullYear()?'today':''}">${d}</span>`;
+    $('tbcg').innerHTML=h;
+  }
+  $('tbprev').onclick=e=>{e.stopPropagation();m--;if(m<0){m=11;y--}draw()};
+  $('tbnext').onclick=e=>{e.stopPropagation();m++;if(m>11){m=0;y++}draw()};
+  draw();
 })();
 load();
 </script>
-@endpush
+@endpush  

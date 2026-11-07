@@ -7,6 +7,7 @@
 <title>@yield('title', 'Dashboard') · RailSafe</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="{{ asset('css/railsafe.css') }}">
+<link rel="icon" href="{{ asset('images/favicon.png') }}" type="image/png">
 <script>try{var t=localStorage.getItem('rs-theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
 <script>try{if(localStorage.getItem('rs-side-min')==='1')document.documentElement.classList.add('preload-side-min')}catch(e){}</script>
 </head>
@@ -15,8 +16,10 @@
 <aside class="side" id="side">
   <div class="side-head">
     <div class="brand">
-      <i><svg viewBox="0 0 24 24" fill="none" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l-2 18M18 3l2 18M5 8h14M4.5 14h15"/></svg></i>
-      <span class="brand-text">RailSafe</span>
+  <i>
+    <img src="{{ asset('images/favicon.png') }}" alt="RailSafe Logo" style="width: 34px; height: 34px; object-fit: contain;">
+  </i>
+    <span class="brand-text">RailSafe</span>
     </div>
     <button class="side-toggle" id="side-toggle" type="button" aria-label="Kecilkan menu" aria-expanded="true" title="Kecilkan/Perbesar menu">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
@@ -51,13 +54,6 @@
 </main>
 
 </div>
-<div class="calw" id="calw" role="complementary" aria-label="Kalender">
-  <button class="calt" id="calt" type="button" aria-label="Tampilkan atau sembunyikan kalender" aria-expanded="false"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></button>
-  <div class="calp">
-    <div class="calh"><button id="calprev" type="button" aria-label="Bulan sebelumnya">&lsaquo;</button><b id="cm"></b><button id="calnext" type="button" aria-label="Bulan berikutnya">&rsaquo;</button></div>
-    <div class="cg" id="cg"></div>
-  </div>
-</div>
 <script>
 document.getElementById('theme').onclick=function(){var r=document.documentElement,d=r.dataset.theme?r.dataset.theme==='dark':matchMedia('(prefers-color-scheme:dark)').matches;r.dataset.theme=d?'light':'dark';try{localStorage.setItem('rs-theme',r.dataset.theme)}catch(e){}};
 (function(){
@@ -72,22 +68,6 @@ document.getElementById('theme').onclick=function(){var r=document.documentEleme
       try{localStorage.setItem('rs-side-min',min?'1':'0')}catch(e){}
     };
   }
-})();
-(function(){
- var w=document.getElementById('calw'),b=document.getElementById('calt'),now=new Date(),y=now.getFullYear(),m=now.getMonth();
- function set(o){w.classList.toggle('open',o);b.setAttribute('aria-expanded',o);try{localStorage.setItem('rs-cal',o?'1':'0')}catch(e){}}
- b.onclick=function(){set(!w.classList.contains('open'))};
- try{if(localStorage.getItem('rs-cal')==='1')set(true)}catch(e){}
- function draw(){
-  document.getElementById('cm').textContent=new Date(y,m,1).toLocaleDateString('id-ID',{month:'long',year:'numeric'});
-  var first=(new Date(y,m,1).getDay()+6)%7,days=new Date(y,m+1,0).getDate(),prev=new Date(y,m,0).getDate();
-  var h=['Sen','Sel','Rab','Kam','Jum','Sab','Min'].map(function(d){return '<span class="h">'+d+'</span>'}).join('');
-  for(var i=first-1;i>=0;i--)h+='<span class="o">'+(prev-i)+'</span>';
-  for(var d=1;d<=days;d++)h+='<span class="'+(d===now.getDate()&&m===now.getMonth()&&y===now.getFullYear()?'today':'')+'">'+d+'</span>';
-  document.getElementById('cg').innerHTML=h}
- document.getElementById('calprev').onclick=function(){m--;if(m<0){m=11;y--}draw()};
- document.getElementById('calnext').onclick=function(){m++;if(m>11){m=0;y++}draw()};
- draw();
 })();
 </script>
 @stack('scripts')
