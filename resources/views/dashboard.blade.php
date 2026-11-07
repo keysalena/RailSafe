@@ -4,6 +4,11 @@
 @section('content')
 <div class="top">
   <h1>Dashboard</h1>
+  <div class="live-clock" id="live-clock" aria-live="polite">
+    <span class="live-clock-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span>
+    <span class="live-clock-time" id="clock-time">--:--:-- WIB</span>
+    <span class="live-clock-date" id="clock-date">--</span>
+  </div>
   @if($crossings->count() > 1)
   <form method="GET" action="{{ route('dashboard') }}" class="f" style="min-width:200px">
     <select name="crossing" onchange="this.form.submit()" aria-label="Pilih pos">
@@ -25,14 +30,31 @@
 </section>
 
 <section class="g g2">
-  <div class="card">
+  <div class="card donut-card">
     <div class="ch"><h2>Pemicu penutupan palang</h2><span class="pill">Hari ini</span></div>
-    <div class="donut"><svg viewBox="0 0 120 120" id="dn"></svg><div><small>Total penutupan</small><b id="dt">0</b></div></div>
-    <div class="dl"><div><b id="dm">0</b><span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--blue);margin-right:5px"></i>Manual</span></div><div><b id="da">0</b><span><i style="display:inline-block;width:8px;height:8px;border-radius:2px;background:var(--yellow);margin-right:5px"></i>Otomatis</span></div></div>
+    <div class="donut">
+      <svg viewBox="0 0 160 160" id="dn"></svg>
+      <div class="donut-core">
+        <b class="donut-val" id="dt">0</b>
+        <span class="donut-sub">Total penutupan</span>
+      </div>
+    </div>
+    <div class="dl">
+      <div class="dl-item">
+        <div class="dl-label"><i style="background:var(--blue)"></i><span>Manual</span></div>
+        <b id="dm">0</b>
+      </div>
+      <div class="dl-item">
+        <div class="dl-label"><i style="background:var(--yellow)"></i><span>Otomatis</span></div>
+        <b id="da">0</b>
+      </div>
+    </div>
   </div>
-  <div class="card">
-    <div class="ch"><h2>Penutupan per jam</h2><span class="pill">00.00 sampai 23.00</span></div>
-    <div class="lg"><span><i style="background:var(--yellow)"></i>Hari ini</span><span><i style="background:var(--blue)"></i>Rata-rata 7 hari</span></div>
+  <div class="card" style="display:flex;flex-direction:column;justify-content:space-between">
+    <div>
+      <div class="ch"><h2>Penutupan per jam</h2><span class="pill">00.00 sampai 23.00</span></div>
+      <div class="lg"><span><i style="background:var(--yellow)"></i>Hari ini</span><span><i style="background:var(--blue)"></i>Rata-rata 7 hari</span></div>
+    </div>
     <svg id="area" viewBox="0 0 560 210" style="width:100%;height:auto" role="img" aria-label="Grafik penutupan palang per jam hari ini dibanding rata-rata 7 hari"></svg>
   </div>
 </section>
@@ -60,7 +82,7 @@
 
 <section class="g g3">
   <div class="card"><div class="ch"><h2>Perangkat</h2><span class="pill">Terakhir lapor</span></div><div id="devs"></div></div>
-  <div class="card"><div class="ch"><h2>Kesehatan sensor</h2></div><div id="sens"></div></div>
+  <div class="card"><div class="ch"><h2>Status Sensor</h2></div><div id="sens"></div></div>
 </section>
 
 <section class="card">
@@ -83,8 +105,8 @@ function beep(){if(!soundOn)return;try{ac=ac||new (window.AudioContext||window.w
 
 function smooth(p){let d='M'+p[0][0]+','+p[0][1];for(let i=0;i<p.length-1;i++){const p0=p[i-1]||p[i],p1=p[i],p2=p[i+1],p3=p[i+2]||p2;d+=' C'+(p1[0]+(p2[0]-p0[0])/6)+','+(p1[1]+(p2[1]-p0[1])/6)+' '+(p2[0]-(p3[0]-p1[0])/6)+','+(p2[1]-(p3[1]-p1[1])/6)+' '+p2[0]+','+p2[1]}return d}
 
-function drawDonut(m,a){const r=44,c=2*Math.PI*r,t=m+a;
- $('dn').innerHTML=t?`<circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--yellow)" stroke-width="22"/><circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--blue)" stroke-width="22" stroke-dasharray="${m/t*c} ${c-m/t*c}"/>`:`<circle cx="60" cy="60" r="${r}" fill="none" stroke="var(--line)" stroke-width="22"/>`;
+function drawDonut(m,a){const r=60,c=2*Math.PI*r,t=m+a,sw=18;
+ $('dn').innerHTML=t?`<circle cx="80" cy="80" r="${r}" fill="none" stroke="var(--yellow)" stroke-width="${sw}"/><circle cx="80" cy="80" r="${r}" fill="none" stroke="var(--blue)" stroke-width="${sw}" stroke-dasharray="${(m/t*c).toFixed(2)} ${(c-m/t*c).toFixed(2)}"/>`:`<circle cx="80" cy="80" r="${r}" fill="none" stroke="var(--line)" stroke-width="${sw}" opacity=".4"/>`;
  $('dt').textContent=t;$('dm').textContent=m;$('da').textContent=a;}
 
 function drawArea(h,nowH){
@@ -116,7 +138,7 @@ function drawGate(g,l){
 
 function drawDevs(a){$('devs').innerHTML=a.length?a.map(d=>{const s=DS[d.status];return `<div class="item"><div class="ic ${d.type==='GATE_CONTROLLER'?'y':''}"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M8 18v2M16 18v2"/></svg></div><div><b>${esc(d.name||d.code)}</b><small>${esc(d.code)} · ${esc(d.crossing)}${d.battery!=null?' · baterai '+d.battery+'%':''}</small></div><div class="r"><span class="tag ${s[1]}">${s[0]}</span>${d.seen_s!=null?`<small>lapor ${d.seen_s} dtk lalu</small>`:''}</div></div>`}).join(''):'<p class="muted">Belum ada perangkat.</p>'}
 
-function drawSens(a){$('sens').innerHTML=a.length?a.map(s=>{let t=['Sehat','t-ok'];if(s.health==='FAULT')t=['Gangguan','t-bad'];else if(s.health==='UNKNOWN')t=['Belum diketahui','t-mute'];else if(s.state==='STANDBY')t=['Siaga','t-mute'];else if(s.state==='OFF')t=['Mati','t-mute'];
+function drawSens(a){$('sens').innerHTML=a.length?a.map(s=>{let t=['Aktif','t-ok'];if(s.health==='FAULT')t=['Gangguan','t-bad'];else if(s.health==='UNKNOWN')t=['Belum diketahui','t-mute'];else if(s.state==='STANDBY')t=['Siaga','t-mute'];else if(s.state==='OFF')t=['Mati','t-mute'];
  return `<div class="item"><div><b>${esc(SN[s.type]||s.type)}</b><small>${esc(s.detail||s.device)}</small></div><div class="r"><span class="tag ${t[1]}">${t[0]}</span></div></div>`}).join(''):'<p class="muted">Belum ada laporan sensor. Laporan dikirim lewat /api/heartbeat.</p>'}
 
 function drawRows(a){$('rows').innerHTML=a.length?a.map(e=>`<tr onclick="location.href='${esc(e.url)}'"><td>${esc(e.date)} ${esc(e.time)}</td><td>${e.trigger==='AUTOMATIC'?'Otomatis':'Manual'}</td><td>${e.confidence!=null?e.confidence+'%':'-'}</td><td><span class="tag ${esc(e.tone)}">${esc(e.status)}</span></td><td>${esc(e.notes||'')}</td></tr>`).join(''):'<tr><td colspan="5">Belum ada log.</td></tr>'}
@@ -130,6 +152,15 @@ async function load(){let next=3000;
   if(r.status===401||r.status===419){location.href='{{ route('login') }}';return}
   const d=await r.json();render(d);if(d.gate.state==='CLOSED')next=1000}catch(e){next=5000}
  setTimeout(load,next)}
+(function updateClock(){
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString('id-ID', {hour:'2-digit', minute:'2-digit', second:'2-digit'}) + ' WIB';
+  const dateStr = now.toLocaleDateString('id-ID', {weekday:'short', day:'numeric', month:'short', year:'numeric'});
+  const tEl = $('clock-time'), dEl = $('clock-date');
+  if(tEl) tEl.textContent = timeStr;
+  if(dEl) dEl.textContent = dateStr;
+  setTimeout(updateClock, 1000);
+})();
 load();
 </script>
 @endpush

@@ -37,7 +37,7 @@
     </ul>
 
     <figure class="login-scene" aria-hidden="true">
-      <!-- <img class="login-railway-art" src="{{ asset('images/trainupdate.png') }}" alt=""> -->
+      <img class="login-railway-art" src="{{ asset('images/commuter.png') }}" alt="Ilustrasi Kereta RailSafe">
     </figure>
     <p class="login-intro-note">RailSafe © 2025</p>
   </section>
