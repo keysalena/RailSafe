@@ -11,7 +11,10 @@ RailSafe adalah prototipe sistem pemantauan perlintasan kereta api. Sistem mengg
 - [Perangkat keras dan sambungan](#perangkat-keras-dan-sambungan)
 - [Cara kerja firmware](#cara-kerja-firmware)
 - [Menyiapkan firmware ESP32](#menyiapkan-firmware-esp32)
+- [Kode Arduino — penjelasan detail](#kode-arduino--penjelasan-detail)
+- [Machine Learning — penjelasan detail](#machine-learning--penjelasan-detail)
 - [Menyiapkan aplikasi Laravel](#menyiapkan-aplikasi-laravel)
+- [Database seeder](#database-seeder)
 - [API perangkat](#api-perangkat)
 - [Akun dan simulasi demo](#akun-dan-simulasi-demo)
 - [Pengaturan sistem](#pengaturan-sistem)
@@ -49,7 +52,11 @@ MPU6050 ──I²C──> Node 1 (ESP32 + TinyML)
 | `Machine Learning/Pencatatan MPU.py` | Skrip Python untuk merekam keluaran Serial ke CSV. |
 | `Machine Learning/Dummy File.py` | Pembuat dataset sintetis untuk idle, truk, dan kereta; bukan pengganti dataset pengukuran nyata. |
 | `app/`, `routes/`, `resources/` | Aplikasi Laravel, controller, route, dan tampilan web. |
-| `database/migrations/`, `database/seeders/` | Skema database dan data demo. |
+| `database/migrations/` | Skema tabel database. |
+| `database/seeders/AccountSeeder.php` | Seeder akun demo (superadmin & operator). |
+| `database/seeders/CrossingSeeder.php` | Seeder pos perlintasan, perangkat, log sensor awal, dan pengaturan default. |
+| `database/seeders/SimulationSeeder.php` | Seeder riwayat log palang 7 hari (data simulasi, 78% otomatis / 22% manual). |
+| `database/seeders/DatabaseSeeder.php` | Titik masuk utama; memanggil ketiga seeder di atas secara berurutan. |
 
 ## Perangkat keras dan sambungan
 
@@ -140,31 +147,238 @@ Untuk aksi tombol, `trigger_type` berisi `MANUAL`. Controller Laravel mengubah s
 
 ## Menyiapkan firmware ESP32
 
-1. Pasang Arduino IDE atau Arduino CLI dan dukungan board ESP32.
-2. Pasang library yang digunakan sketch:
-   - `LoRa` (Sandeep Mistry)
-   - `Adafruit MPU6050`
-   - `Adafruit Unified Sensor`
-   - `Eloquent TinyML` beserta dependensi TensorFlow Lite Micro yang diperlukan versinya
-   - `LiquidCrystal_I2C`
-   - `ESP32Servo`
-3. Pilih board dan port ESP32 yang sesuai.
-4. Buka firmware Node 1 bersama `model_data.h`. Pastikan file header berada di folder sketch yang sama dan pemanggilan model memakai simbol `g_RailSafe_model`.
-5. Buka `Node 2 RailSafe/Node2.ino`, sesuaikan pin ultrasonik kedua, SSID/kata sandi Wi-Fi, serta URL Laravel pada konstanta di bagian atas file.
-6. Unggah firmware ke kedua board. Buka Serial Monitor pada 115200 baud untuk melihat status inisialisasi dan prediksi.
+Ada dua versi firmware Node 1 di repo ini dengan perbedaan library TinyML:
 
-> Di repo ada dua salinan `Node1.ino`. Gunakan file utama di `Node 1 RailSafe/Node1.ino` bersama `model_data.h`, atau pastikan salinan di subfolder tetap identik dan dapat menemukan header tersebut. File perekaman MPU adalah sketch terpisah, bukan firmware Node 1 operasional.
+| File | Library MPU6050 | Library TinyML | Keterangan |
+| --- | --- | --- | --- |
+| `Node 1 RailSafe/Node1/Node1.ino` | `MPU6050_light` | `Chirale_TensorFlowLite` + `AllOpsResolver` (TFLite Micro langsung) | **Versi aktif.** Tensor arena 30 KB; mendukung operator EXPAND\_DIMS / RESHAPE yang disisipkan saat konversi Conv1D. |
+| `Node 1 RailSafe/Node1.ino` *(lama)* | `Adafruit MPU6050` | `Eloquent TinyML` (wrapper) | Versi lama. Tensor arena 8 KB. Gunakan hanya jika library Chirale tidak tersedia. |
 
-### Mengumpulkan data MPU
+### Library yang dibutuhkan
 
-1. Unggah `Machine Learning/Kode Arduino/Data MPU/Data MPU.ino` ke ESP32 akuisisi.
-2. Tutup Serial Monitor Arduino agar port tidak terkunci.
-3. Di `Machine Learning/Pencatatan MPU.py`, sesuaikan `PORT_COM`, label `NAMA_LABEL`, dan lama rekam.
-4. Pasang dependensi Python yang digunakan skrip (`pyserial`), lalu jalankan skrip. CSV dibuat di direktori kerja saat perintah dijalankan.
+**Node 1 (versi aktif):**
 
-Sketch akuisisi menggunakan `Wire.begin(21, 22)`, sesuai dengan sambungan I²C Node 1 pada tabel di atas.
+| Library | Sumber |
+| --- | --- |
+| `LoRa` | Sandeep Mistry (Arduino Library Manager) |
+| `MPU6050_light` | rfetick (Arduino Library Manager) |
+| `Chirale_TensorFlowLite` | Chirale (Arduino Library Manager) |
 
-`Machine Learning/Dummy File.py` menghasilkan sinyal sintetis untuk uji bentuk data. Repo ini belum menyertakan notebook/script pelatihan dan evaluasi model yang lengkap; jangan menganggap dataset sintetis sebagai validasi akurasi lapangan.
+**Node 1 (versi lama):**
+
+| Library | Sumber |
+| --- | --- |
+| `LoRa` | Sandeep Mistry |
+| `Adafruit MPU6050` + `Adafruit Unified Sensor` | Adafruit |
+| `Eloquent TinyML` | eloquentarduino (beserta TFLite Micro) |
+
+**Node 2:**
+
+| Library | Sumber |
+| --- | --- |
+| `LoRa` | Sandeep Mistry |
+| `LiquidCrystal_I2C` | Frank de Brabander |
+| `ESP32Servo` | Kevin Harrington |
+
+### Langkah upload firmware
+
+1. Pasang Arduino IDE (≥ 2.x) dan tambahkan dukungan board ESP32 melalui Board Manager (`https://espressif.github.io/arduino-esp32/package_esp32_index.json`).
+2. Pasang library sesuai tabel di atas melalui **Tools → Manage Libraries**.
+3. Pilih board **ESP32 Dev Module** dan port COM yang sesuai.
+4. **Node 1:** Buka `Node 1 RailSafe/Node1/Node1.ino`. Pastikan `model_data.h` berada **di folder sketch yang sama**. Firmware memanggil simbol `g_RailSafe_model` dari header tersebut. Upload dan pantau Serial Monitor (115200 baud) — pesan `✅ Model TinyML RailSafe berhasil dimuat.` menandakan model berhasil dimuat.
+5. **Node 2:** Buka `Node 2 RailSafe/Node2.ino`. Sesuaikan konstanta berikut di bagian atas file sebelum upload:
+
+   ```cpp
+   const char* WIFI_SSID     = "Nama_WiFi_Anda";
+   const char* WIFI_PASSWORD = "Password_WiFi_Anda";
+   const char* LARAVEL_API   = "http://<IP-LAN-SERVER>:8000/api/gate-log";
+   ```
+
+6. Upload ke masing-masing board. Periksa log Serial Monitor untuk memastikan inisialisasi LoRa, sensor, dan Wi-Fi berhasil.
+
+> **Catatan dua salinan Node1:** Gunakan versi aktif di `Node 1 RailSafe/Node1/Node1.ino`. File `Node 1 RailSafe/Node1.ino` adalah versi lama yang menggunakan Adafruit MPU6050 dan Eloquent TinyML; hanya gunakan jika diperlukan dan pastikan kedua file selalu disinkronkan bila ada perubahan.
+
+---
+
+## Kode Arduino — penjelasan detail
+
+### Node 1: alur inferensi TinyML
+
+```
+Boot
+ ├─ Wire.begin(21, 22)  →  MPU6050_light.begin() + calcOffsets()
+ ├─ initTinyML()        →  load model_data.h → AllocateTensors()
+ └─ LoRa.begin(433E6)   →  setSyncWord(0xF3)
+
+Loop (tiap 10 ms)
+ └─ mpu.update()
+     ├─ accX/Y/Z = getAccX/Y/Z() × 9.81  [m/s²]
+     ├─ gyroX/Y/Z = getGetGyroX/Y/Z()    [deg/s]
+     └─ input_buffer[sample_index × 6 .. +5] = nilai di atas
+
+Ketika 100 sampel terkumpul (1 detik)
+ ├─ Salin input_buffer → input_tensor->data.f[]
+ ├─ interpreter->Invoke()
+ ├─ Baca output: [prob_idle, prob_kereta, prob_truk]
+ ├─ prob_kereta > 0.70  → kirimSinyalLoRa("ALERT_KERETA", confidence)
+ ├─ prob_truk   > 0.75  → log Serial saja (tidak kirim LoRa)
+ └─ lainnya             → "Status Rel: Aman/Idle"
+```
+
+**Detail tensor arena:** `TENSOR_ARENA_SIZE` diset 30 KB (`30 * 1024`). Nilai ini diperlukan karena `AllOpsResolver` mendaftarkan semua operator built-in termasuk `EXPAND_DIMS` dan `RESHAPE` yang disisipkan otomatis saat model Conv1D dikonversi ke TFLite. Naikkan nilai ini jika `AllocateTensors()` gagal.
+
+**Konversi satuan:** Firmware menggunakan rumus `getAccX() × 9.81` agar satuan akselerometer seragam (m/s²) dengan data CSV yang direkam oleh `Pencatatan_MPU.py`. Pastikan rumus ini **sama persis** di firmware dan skrip perekaman, jika tidak model akan menerima distribusi input yang berbeda dari data latih.
+
+**Format paket LoRa:**
+
+```
+RailSafe:ALERT_KERETA:<confidence>
+Contoh: RailSafe:ALERT_KERETA:0.83
+```
+
+### Node 2: alur kendali palang
+
+```
+Boot
+ ├─ Servo → bukaPalang() (posisi 0°)
+ ├─ LCD   → "RailSafe READY / STATUS: AMAN"
+ ├─ WiFi.begin() (timeout 5 detik, lanjut offline jika gagal)
+ └─ LoRa.begin(433E6) → setSyncWord(0xF3)
+
+Loop
+ ├─ [A] cekTombolManual()         — debounce 400 ms, toggle palang
+ ├─ [B] LoRa.parsePacket()
+ │       └─ startsWith("RailSafe:ALERT_KERETA")
+ │           ├─ Parse confidence dari substring setelah ':' terakhir
+ │           ├─ lastTrainAlertTime = millis()
+ │           └─ isGateClosed == false → tutupPalangOtomatis(confidence)
+ ├─ [C] Auto-reset
+ │       └─ isGateClosed && !isManualOverride
+ │           └─ millis() - lastTrainAlertTime > 15 000 ms → bukaPalang()
+ └─ [D] Buzzer: HIGH 150 ms / LOW 150 ms saat palang tertutup
+```
+
+**tutupPalangOtomatis(confidence):**
+
+```
+1. ukurJarakHCSR04(sensor 1) + ukurJarakHCSR04(sensor 2)
+2. Jika salah satu < 15 cm → tampil "AWAS KENDARAAN!"
+   delay(1000) → ukur ulang kedua sensor
+   Jika masih terhalang → return (palang tetap terbuka)
+3. isGateClosed = true → servo.write(90°)
+4. LCD "🚨 BAHAYA KERETA / PALANG DITUTUP!"
+5. kirimLogKeLaravel("AUTOMATIC", confidence, "Kereta terdeteksi TinyML")
+```
+
+**Konstanta yang perlu disesuaikan di Node2.ino:**
+
+| Konstanta | Default | Keterangan |
+| --- | --- | --- |
+| `WIFI_SSID` / `WIFI_PASSWORD` | *(kosong)* | SSID dan kata sandi jaringan |
+| `LARAVEL_API` | `http://192.168.1.10:8000/api/gate-log` | Ganti dengan IP LAN server Laravel |
+| `AUTO_RESET_TIMEOUT` | `15000` ms | Timer buka otomatis setelah sinyal LoRa terakhir |
+| `TRIG_PIN_2` / `ECHO_PIN_2` | `26` / `25` | Sesuaikan jika sensor ultrasonik kedua dipasang di pin lain |
+| `GATE_OPEN_ANGLE` / `GATE_CLOSE_ANGLE` | `0°` / `90°` | Sesuaikan jika servo terpasang terbalik |
+
+---
+
+## Machine Learning — penjelasan detail
+
+### Alur pipeline data
+
+```
+[Hardware MPU6050]
+      │  USB Serial 115200 baud
+      ▼
+Data MPU.ino  ──Serial──►  Pencatatan_MPU.py  ──►  <label>_<timestamp>.csv
+(akuisisi)                  (rekam & simpan)
+
+      ATAU
+
+Dummy File.py  ──►  idle_test.csv / truk_test.csv / kereta_test.csv
+(sintetis)          (hanya untuk uji bentuk data, bukan validasi akurasi)
+
+      │
+      ▼
+[Notebook pelatihan — belum ada di repo]
+      │  keras / TensorFlow → TFLite Conversion → xxd / numpy
+      ▼
+model_data.h  (array byte C++, simbol: g_RailSafe_model)
+      │
+      ▼
+Node 1 — TensorFlow Lite Micro → inferensi di ESP32
+```
+
+### Format dataset CSV
+
+Setiap baris mewakili satu sampel (interval 10 ms):
+
+| Kolom | Satuan | Keterangan |
+| --- | --- | --- |
+| `timestamp_ms` | ms | Waktu dari `millis()` ESP32 |
+| `accX` | m/s² | Akselerasi sumbu X (getAccX × 9.81) |
+| `accY` | m/s² | Akselerasi sumbu Y |
+| `accZ` | m/s² | Akselerasi sumbu Z (diam ≈ 9.81) |
+| `gyroX` | deg/s | Kecepatan angular sumbu X |
+| `gyroY` | deg/s | Kecepatan angular sumbu Y |
+| `gyroZ` | deg/s | Kecepatan angular sumbu Z |
+
+Satu window inferensi = **100 baris × 6 kolom = 600 nilai float**.
+
+### Karakteristik sinyal per kelas (data sintetis Dummy File.py)
+
+| Kelas | Pola akselerasi | Pola giroskop | Noise |
+| --- | --- | --- | --- |
+| **Idle** | accZ ≈ 9.81 g, XY ≈ 0 | ≈ 0 deg/s | σ kecil (0.08–0.10) |
+| **Truk** | Sinusoidal 8 Hz, amplitudo ~1.2 | σ 0.15 deg/s | σ sedang (0.25–0.35) |
+| **Kereta** | 25 Hz + 40 Hz + impak ±8 m/s² setiap 100 sampel | σ 0.6 deg/s | σ besar (0.8–1.2) |
+
+> Data sintetis ini **tidak mewakili kondisi lapangan nyata** dan hanya digunakan untuk menguji bentuk dan format input model. Model yang sudah ada di `model_data.h` dilatih dari data terpisah.
+
+### Langkah akuisisi data nyata
+
+1. Upload `Machine Learning/Kode Arduino/Data MPU/Data MPU.ino` ke ESP32 yang dipasangi MPU6050 di rel / lokasi yang ingin diukur.
+2. Sketch otomatis mencetak header CSV (`timestamp_ms,accX,...`) lalu streaming data ke Serial.
+3. **Tutup Serial Monitor Arduino IDE** agar port tidak terkunci.
+4. Edit konfigurasi di `Machine Learning/Pencatatan_MPU.py`:
+
+   ```python
+   PORT_COM     = 'COM4'      # Port COM ESP32 (cek di Device Manager)
+   BAUDRATE     = 115200
+   NAMA_LABEL   = 'kereta'    # 'kereta' | 'truk' | 'idle'
+   DURASI_DETIK = 30          # Durasi rekam dalam detik
+   ```
+
+5. Install dependensi dan jalankan:
+
+   ```powershell
+   pip install pyserial
+   python "Machine Learning/Pencatatan_MPU.py"
+   ```
+
+6. File CSV bernama `<label>_<unix_timestamp>.csv` dibuat di direktori kerja.
+7. Ulangi untuk setiap kelas (`kereta`, `truk`, `idle`) dan setiap kondisi pengukuran.
+
+> **Kalibrasi:** Sketch akuisisi menjalankan `mpu.calcOffsets()` saat boot. **Jangan gerakkan modul** selama kalibrasi berlangsung (sekitar 1 detik setelah pesan `Mengukur offset sensor...`). Pastikan orientasi pemasangan MPU6050 sama antara akuisisi data dan deployment di Node 1.
+
+### Membuat dataset sintetis
+
+```powershell
+pip install numpy pandas
+python "Machine Learning/Dummy File.py"
+```
+
+Menghasilkan tiga file: `idle_test.csv`, `truk_test.csv`, `kereta_test.csv` — masing-masing 1000 sampel (10 detik × 100 Hz). Gunakan hanya untuk memverifikasi format input sebelum melatih model dengan data nyata.
+
+### Model TinyML (`model_data.h`)
+
+File ini adalah hasil ekspor model TensorFlow Lite yang telah dikonversi ke array byte C++. Simbol utama yang digunakan firmware:
+
+```cpp
+alignas(16) const unsigned char g_RailSafe_model[];
+```
+
+Model dimuat oleh fungsi `initTinyML()` di Node 1 melalui `tflite::GetModel(g_RailSafe_model)`. Pipeline pelatihan lengkap (notebook, preprocessing, augmentasi, evaluasi, dan konversi ke `.h`) belum disertakan di repo ini.
 
 ## Menyiapkan aplikasi Laravel
 
@@ -201,6 +415,53 @@ php artisan serve --host 0.0.0.0 --port 8000
 npm run dev -- --host 0.0.0.0
 ```
 
+## Database seeder
+
+Seeder dipisah menjadi tiga kelas agar dapat dijalankan secara mandiri sesuai kebutuhan.
+
+| Seeder | Isi |
+| --- | --- |
+| `AccountSeeder` | Akun demo superadmin (`superadmin@railsafe.test`) dan operator (`operator@railsafe.test`). |
+| `CrossingSeeder` | Satu pos perlintasan demo, Node 1 & Node 2 beserta token demo, log sensor awal, dan pengaturan sistem default. Prasyarat: `AccountSeeder` sudah dijalankan. |
+| `SimulationSeeder` | Riwayat log palang 7 hari dengan pola acak (78% otomatis TinyML, 22% manual). Prasyarat: `CrossingSeeder` sudah dijalankan. |
+| `DatabaseSeeder` | Titik masuk utama. Memanggil `AccountSeeder → CrossingSeeder → SimulationSeeder` secara berurutan. |
+
+### Menjalankan seeder
+
+**Semua sekaligus** (digunakan bersama `migrate --seed`):
+
+```powershell
+php artisan migrate --seed
+# atau tanpa migrasi ulang:
+php artisan db:seed
+```
+
+**Seeder tertentu saja:**
+
+```powershell
+# Hanya akun demo
+php artisan db:seed --class=AccountSeeder
+
+# Hanya pos, perangkat, dan pengaturan (jalankan setelah AccountSeeder)
+php artisan db:seed --class=CrossingSeeder
+
+# Hanya tambah data simulasi log 7 hari (jalankan setelah CrossingSeeder)
+php artisan db:seed --class=SimulationSeeder
+```
+
+> **Peringatan:** Jangan jalankan seeder berulang pada database berisi data yang ingin dipertahankan. Seeder tidak memeriksa duplikat secara keseluruhan; jalankan `migrate:fresh --seed` hanya di lingkungan pengembangan.
+
+### Token demo perangkat
+
+`CrossingSeeder` membuat dua perangkat dengan token demo:
+
+| Perangkat | Token demo |
+| --- | --- |
+| NODE-01 (SENSOR\_NODE) | `rs_demo_node01_token` |
+| NODE-02 (GATE\_CONTROLLER) | `rs_demo_node02_token` |
+
+Token asli hanya tersedia saat dibuat atau diputar ulang. Hash token disimpan di database; **ganti token ini sebelum deploy ke jaringan yang lebih luas**.
+
 ## API perangkat
 
 Semua rute API perangkat berada di middleware `device.token` dan dibatasi hingga 120 permintaan per menit.
@@ -232,11 +493,18 @@ Seeder membuat data contoh: satu pos, dua perangkat, beberapa sensor, pengaturan
 
 Ganti/hapus akun dan kata sandi demo sebelum aplikasi dibuka ke jaringan yang lebih luas. Operator dibatasi ke pos yang ditugaskan; superadmin dapat mengelola akun, pos, perangkat, token, pengaturan, dan audit.
 
-Perintah simulasi untuk mengisi aktivitas tanpa perangkat keras:
+### Perintah simulasi (tanpa perangkat keras)
+
+Gunakan perintah Artisan berikut untuk mengisi aktivitas tanpa hardware ESP32:
 
 ```powershell
+# Simulasi penutupan otomatis oleh TinyML + heartbeat selama durasi buka ulang
 php artisan railsafe:simulate --train
+
+# Simulasi penutupan dan pembukaan manual oleh operator
 php artisan railsafe:simulate --manual
+
+# Kirim heartbeat berkala setiap 5 detik (tekan Ctrl+C untuk berhenti)
 php artisan railsafe:simulate
 ```
 
@@ -275,7 +543,7 @@ Pengaturan dapat diubah oleh superadmin. Firmware belum mengambil `GET /api/conf
 | Ultrasonik selalu mendeteksi kosong | Periksa TRIG/ECHO kedua sensor, ground bersama, arah sensor, batas ukur, dan level tegangan ECHO. Ambang firmware saat ini 15 cm. |
 | LCD kosong | Periksa SDA/SCL, alamat I²C `0x27`, kontras, dan catu daya LCD. |
 | Log API gagal | Pastikan server Laravel hidup, URL memakai IP LAN server (bukan `localhost`), firewall mengizinkan koneksi, Wi-Fi tersambung, database sudah dimigrasi, dan mode token sesuai firmware. Periksa kode HTTP di Serial Monitor. |
-| Dashboard tidak bisa login | Jalankan `php artisan migrate --seed`, lalu gunakan akun demo di atas. Jangan jalankan seeder berulang pada database berisi data yang ingin dipertahankan karena seeder membuat akun/riwayat demo baru. |
+| Dashboard tidak bisa login | Jalankan `php artisan migrate --seed`, lalu gunakan akun demo di atas. Jangan jalankan seeder berulang pada database berisi data yang ingin dipertahankan; gunakan `migrate:fresh --seed` hanya di lingkungan pengembangan. |
 
 ## Lisensi dan kontribusi
 

@@ -2,7 +2,7 @@ import serial
 import time
 
 # ==================== KONFIGURASI ====================
-PORT_COM = 'COM3'         # Ubah sesuai Port COM ESP32 di laptop Anda (misal COM3, COM4, COM5)
+PORT_COM = 'COM4'         # Ubah sesuai Port COM ESP32 di laptop Anda (misal COM3, COM4, COM5)
 BAUDRATE = 115200         # Harus sama dengan Serial.begin di Arduino (115200)
 NAMA_LABEL = 'kereta'     # Ganti label: 'kereta', 'truk', atau 'idle'
 DURASI_DETIK = 30         # Durasi rekam per file (misal 30 detik)

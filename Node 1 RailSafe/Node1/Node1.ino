@@ -1,28 +1,40 @@
-/*
- * RailSafe - Node 1 (Sensor Rel + TinyML + LoRa TX)
- * Hardware: ESP32, MPU6050, LoRa Ra-02 (SX1278 433MHz)
- */
+
+//  * RailSafe - Node 1 (Sensor Rel + TinyML + LoRa TX)
+//  * Hardware: ESP32, MPU6050 (MPU6050_light), LoRa Ra-02 (SX1278 433MHz)
+
 
 #include <Wire.h>
 #include <SPI.h>
 #include <LoRa.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
-#include <eloquent_tinyml.h>
+#include <MPU6050_light.h>
 
-#include "model_data.h" // Header model hasil ekspor Colab
+#include <Chirale_TensorFlowLite.h>
 
-// Config TinyML Model
-#define NUMBER_OF_INPUTS 600   // 100 sampel x 6 sumbu (accX,Y,Z, gyroX,Y,Z)
-#define NUMBER_OF_OUTPUTS 3    // 3 Kelas: 0 = idle, 1 = kereta, 2 = truk
-#define TENSOR_ARENA_SIZE 8 * 1024 // 8 KB SRAM
+#include <tensorflow/lite/micro/all_ops_resolver.h>
+#include <tensorflow/lite/micro/micro_interpreter.h>
+#include <tensorflow/lite/micro/micro_log.h>
+#include <tensorflow/lite/schema/schema_generated.h>
 
-Eloquent::TinyML::TfLite<NUMBER_OF_INPUTS, NUMBER_OF_OUTPUTS, TENSOR_ARENA_SIZE> ml;
+#include "model_data.h"
 
-// Pinout MPU6050 (I2C)
-#define SDA_PIN 21
-#define SCL_PIN 22
-Adafruit_MPU6050 mpu;
+// Konfigurasi Model TinyML
+#define NUMBER_OF_INPUTS 600          // 100 sampel x 6 sumbu (accX,Y,Z, gyroX,Y,Z)
+#define NUMBER_OF_OUTPUTS 3           // 3 Kelas: 0 = idle, 1 = kereta, 2 = truk
+#define TENSOR_ARENA_SIZE (30 * 1024) // Dinaikkan dari 10KB -> 30KB karena AllOpsResolver
+                                       // + operator tambahan (EXPAND_DIMS/RESHAPE) butuh
+                                       // lebih banyak scratch memory. Naikkan lagi jika
+                                       // AllocateTensors() masih gagal.
+
+// --- Objek TensorFlow Lite Micro ---
+const tflite::Model* tfl_model = nullptr;
+tflite::MicroInterpreter* interpreter = nullptr;
+TfLiteTensor* input_tensor  = nullptr;
+TfLiteTensor* output_tensor = nullptr;
+
+alignas(16) uint8_t tensor_arena[TENSOR_ARENA_SIZE];
+
+// Inisialisasi MPU6050_light (Bus I2C SDA=21, SCL=22)
+MPU6050 mpu(Wire);
 
 // Pinout LoRa Ra-02 (SPI)
 #define LORA_SCK 18
@@ -40,37 +52,51 @@ int sample_index = 0;
 unsigned long lastSampleTime = 0;
 const unsigned long SAMPLING_PERIOD_MS = 10; // 100 Hz
 
+// Prototipe Fungsi
+void kirimSinyalLoRa(String status, float confidence);
+bool initTinyML();
+
 void setup() {
   Serial.begin(115200);
-  delay(500);
+  delay(2000); // Jeda 2 detik agar tegangan bus I2C & SPI stabil
+  Serial.println("\n--- [RailSafe Node 1: Inisialisasi Sistem] ---");
 
-  // 1. Inisialisasi MPU6050
-  Wire.begin(SDA_PIN, SCL_PIN);
-  if (!mpu.begin()) {
-    Serial.println("❌ ERROR: MPU6050 tidak terdeteksi!");
-    while (1) delay(10);
+  // 1. Inisialisasi MPU6050_light (Dengan Retry Loop seperti kode Anda)
+  Wire.begin(21, 22);
+  byte status = mpu.begin();
+
+  while (status != 0) {
+    Serial.print("❌ ERROR: MPU6050 gagal init! Kode Status: ");
+    Serial.println(status);
+    delay(1000);
+    status = mpu.begin();
   }
-  mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
-  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
+  Serial.println("✅ MPU6050 Berhasil Terkoneksi!");
 
-  // 2. Inisialisasi Model TinyML
-  if (!ml.begin(g_RailSafe_model)) {
+  // Kalibrasi offset gyro/accel
+  Serial.println("Mengukur offset sensor... Jangan gerakkan modul!");
+  delay(1000);
+  mpu.calcOffsets();
+  Serial.println("✅ Selesai kalibrasi MPU6050!");
+
+  // 2. Inisialisasi Model TinyML (TFLite Micro + AllOpsResolver)
+  if (!initTinyML()) {
     Serial.println("❌ ERROR: Gagal memuat Model TinyML!");
-    while (1) delay(10);
+    while (1) delay(500);
   }
-  Serial.println("✅ Model TinyML berhasil dimuat di ESP32.");
+  Serial.println("✅ Model TinyML RailSafe berhasil dimuat.");
 
   // 3. Inisialisasi LoRa Ra-02
   SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_SS);
   LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
 
-  if (!LoRa.begin(433E6)) { // Frekuensi 433 MHz
+  if (!LoRa.begin(433E6)) {
     Serial.println("❌ ERROR: LoRa Ra-02 gagal diinisialisasi!");
-    while (1) delay(10);
+    while (1) delay(500);
   }
-  LoRa.setSyncWord(0xF3); // Network Sync Word RailSafe
+  LoRa.setSyncWord(0xF3); // Sync Word RailSafe
   Serial.println("✅ LoRa Ra-02 Transmit Siap (433 MHz).");
+  Serial.println("\n--- [Sistem RailSafe Node 1 Berjalan] ---");
 }
 
 void loop() {
@@ -80,38 +106,53 @@ void loop() {
   if (currentMillis - lastSampleTime >= SAMPLING_PERIOD_MS) {
     lastSampleTime = currentMillis;
 
-    sensors_event_t a, g, temp;
-    mpu.getEvent(&a, &g, &temp);
+    mpu.update();
+
+    // Menggunakan rumus konversi yang 100% SAMA dengan skrip perekaman CSV Anda
+    float accX  = mpu.getAccX() * 9.81f;
+    float accY  = mpu.getAccY() * 9.81f;
+    float accZ  = mpu.getAccZ() * 9.81f;
+
+    float gyroX = mpu.getGyroX(); // Dalam deg/s (Sesuai CSV)
+    float gyroY = mpu.getGyroY(); // Dalam deg/s (Sesuai CSV)
+    float gyroZ = mpu.getGyroZ(); // Dalam deg/s (Sesuai CSV)
 
     // Isi Buffer secara Berurutan (accX, accY, accZ, gyroX, gyroY, gyroZ)
     int idx = sample_index * 6;
-    input_buffer[idx + 0] = a.acceleration.x;
-    input_buffer[idx + 1] = a.acceleration.y;
-    input_buffer[idx + 2] = a.acceleration.z;
-    input_buffer[idx + 3] = g.gyro.x;
-    input_buffer[idx + 4] = g.gyro.y;
-    input_buffer[idx + 5] = g.gyro.z;
+    input_buffer[idx + 0] = accX;
+    input_buffer[idx + 1] = accY;
+    input_buffer[idx + 2] = accZ;
+    input_buffer[idx + 3] = gyroX;
+    input_buffer[idx + 4] = gyroY;
+    input_buffer[idx + 5] = gyroZ;
 
     sample_index++;
 
-    // Jika Buffer sudah penuh (100 Sampel / 1 Detik), Jalankan Inferensi
+    // Jika Buffer sudah penuh (100 Sampel = 1 Detik), Jalankan Inferensi
     if (sample_index >= WINDOW_SIZE) {
       sample_index = 0; // Reset index buffer
 
-      float y_pred[NUMBER_OF_OUTPUTS] = {0};
-      
+      // Salin buffer ke tensor input TFLite Micro
+      for (int i = 0; i < NUMBER_OF_INPUTS; i++) {
+        input_tensor->data.f[i] = input_buffer[i];
+      }
+
       // Jalankan Prediksi TinyML
-      ml.predict(input_buffer, y_pred);
+      TfLiteStatus invoke_status = interpreter->Invoke();
+      if (invoke_status != kTfLiteOk) {
+        Serial.println("❌ ERROR: Invoke() gagal, inferensi dilewati.");
+        return;
+      }
 
-      float prob_idle   = y_pred[0];
-      float prob_kereta = y_pred[1];
-      float prob_truk   = y_pred[2];
+      float prob_idle   = output_tensor->data.f[0];
+      float prob_kereta = output_tensor->data.f[1];
+      float prob_truk   = output_tensor->data.f[2];
 
-      Serial.printf("Prediksi -> Idle: %.2f | Kereta: %.2f | Truk: %.2f\n", 
+      Serial.printf("Prediksi -> Idle: %.2f | Kereta: %.2f | Truk: %.2f\n",
                     prob_idle, prob_kereta, prob_truk);
 
       // Logika Keputusan & Transmisi LoRa
-      if (prob_kereta > 0.70) { // Ambang batas keyakinan 70%
+      if (prob_kereta > 0.70) { // Threshold keyakinan 70%
         Serial.println("🚨 KERETA TERDETEKSI! Mengirim sinyal LoRa ke Pos PJL...");
         kirimSinyalLoRa("ALERT_KERETA", prob_kereta);
       } else if (prob_truk > 0.75) {
@@ -121,6 +162,35 @@ void loop() {
       }
     }
   }
+}
+
+// Inisialisasi TensorFlow Lite Micro: load model, pasang AllOpsResolver,
+// alokasikan tensor, dan ambil pointer tensor input/output.
+bool initTinyML() {
+  tfl_model = tflite::GetModel(g_RailSafe_model);
+  if (tfl_model->version() != TFLITE_SCHEMA_VERSION) {
+    Serial.println("❌ ERROR: Versi skema model tidak cocok dengan TFLite Micro.");
+    return false;
+  }
+
+  // AllOpsResolver mendaftarkan SEMUA operator built-in (termasuk EXPAND_DIMS,
+  // RESHAPE, SQUEEZE yang disisipkan otomatis saat convert Conv1D -> TFLite).
+  static tflite::AllOpsResolver resolver;
+
+  static tflite::MicroInterpreter static_interpreter(
+      tfl_model, resolver, tensor_arena, TENSOR_ARENA_SIZE);
+  interpreter = &static_interpreter;
+
+  TfLiteStatus allocate_status = interpreter->AllocateTensors();
+  if (allocate_status != kTfLiteOk) {
+    Serial.println("❌ ERROR: AllocateTensors() gagal (tensor_arena mungkin kurang besar).");
+    return false;
+  }
+
+  input_tensor  = interpreter->input(0);
+  output_tensor = interpreter->output(0);
+
+  return true;
 }
 
 // Fungsi Pengiriman Paket LoRa
