@@ -1,46 +1,38 @@
 /*
  * RailSafe - Node 1 (Sensor Rel)
- * Program Akuisisi Data Getaran MPU6050 untuk Dataset TinyML
- * 
- * Pinout ESP32 ke MPU6050:
- * - VCC -> 3.3V
- * - GND -> GND
- * - SDA -> GPIO 21
- * - SCL -> GPIO 22
+ * Akuisisi Data MPU6050 menggunakan MPU6050_light
  */
 
 #include <Wire.h>
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
+#include <MPU6050_light.h>
 
-Adafruit_MPU6050 mpu;
+MPU6050 mpu(Wire);
 
-const unsigned long SAMPLING_PERIOD_MS = 10; // 10 ms = 100 Hz (100 sampel/detik)
+const unsigned long SAMPLING_PERIOD_MS = 10; // 100 Hz
 unsigned long lastSampleTime = 0;
 
 void setup() {
   Serial.begin(115200);
-  
-  // Beri waktu 2 detik agar Anda sempat membuka Serial Monitor setelah Reset/Upload
-  delay(2000); 
+  delay(2000);
   Serial.println("\n--- [RailSafe Node 1: Inisialisasi MPU6050] ---");
 
-  Wire.begin(21, 22); // SDA = GPIO 21, SCL = GPIO 22
-
-  // Coba inisialisasi MPU6050 (Alamat default 0x68)
-  while (!mpu.begin(0x68)) {
-    Serial.println("❌ ERROR: MPU6050 tidak terdeteksi! Periksa kabel VCC(3.3V), GND, SDA(21), SCL(22). Retrying...");
-    delay(1000); // Terus coba lagi setiap 1 detik sampai sensor terhubung
+  Wire.begin(21, 22); //
+  byte status = mpu.begin();
+  
+  while (status != 0) {
+    Serial.print("❌ ERROR: MPU6050 gagal init! Kode Status: ");
+    Serial.println(status);
+    delay(1000);
+    status = mpu.begin();
   }
 
   Serial.println("✅ MPU6050 Berhasil Terkoneksi!");
-
-  // Konfigurasi Range Akselerometer +-4G & Low-Pass Filter 44Hz
-  mpu.setAccelerometerRange(MPU6050_RANGE_4_G);
-  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  mpu.setFilterBandwidth(MPU6050_BAND_44_HZ);
-
-  delay(500);
+  
+  // Kalibrasi gyro otomatis saat diam
+  Serial.println("Mengukur offset sensor... Jangan gerakkan modul!");
+  delay(1000);
+  mpu.calcOffsets(); 
+  Serial.println("Selesai kalibrasi!");
 
   // Header CSV untuk dataset TinyML
   Serial.println("timestamp_ms,accX,accY,accZ,gyroX,gyroY,gyroZ");
@@ -49,26 +41,34 @@ void setup() {
 void loop() {
   unsigned long currentMillis = millis();
 
-  // Pengambilan sampel presisi 100 Hz (tiap 10 ms)
   if (currentMillis - lastSampleTime >= SAMPLING_PERIOD_MS) {
     lastSampleTime = currentMillis;
 
-    sensors_event_t a, g, temp;
-    mpu.getEvent(&a, &g, &temp);
+    mpu.update();
 
-    // Format output CSV
+    // MPU6050_light memberikan output percepatan dalam satuan G
+    // Dikali 9.81 m/s^2 agar format seragam dengan library Adafruit
+    float accX = mpu.getAccX() * 9.81;
+    float accY = mpu.getAccY() * 9.81;
+    float accZ = mpu.getAccZ() * 9.81;
+
+    // Output Gyro dalam derajat per detik (deg/s)
+    float gyroX = mpu.getGyroX();
+    float gyroY = mpu.getGyroY();
+    float gyroZ = mpu.getGyroZ();
+
     Serial.print(currentMillis);
     Serial.print(",");
-    Serial.print(a.acceleration.x, 3);
+    Serial.print(accX, 3);
     Serial.print(",");
-    Serial.print(a.acceleration.y, 3);
+    Serial.print(accY, 3);
     Serial.print(",");
-    Serial.print(a.acceleration.z, 3);
+    Serial.print(accZ, 3);
     Serial.print(",");
-    Serial.print(g.gyro.x, 3);
+    Serial.print(gyroX, 3);
     Serial.print(",");
-    Serial.print(g.gyro.y, 3);
+    Serial.print(gyroY, 3);
     Serial.print(",");
-    Serial.println(g.gyro.z, 3);
+    Serial.println(gyroZ, 3);
   }
 }
