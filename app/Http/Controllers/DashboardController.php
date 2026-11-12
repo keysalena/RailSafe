@@ -91,9 +91,8 @@ class DashboardController extends Controller
                 $alert = ['type' => 'RESULT', 'id' => $last->id, 'mode' => $last->trigger_type === 'AUTOMATIC' ? 'AUTO' : 'MANUAL',
                     'guard' => $last->guard_response, 'response_ms' => $last->response_time_ms, 'total' => $countdown];
             }
-        } elseif ($last && $last->gate_action === 'CANCELLED' && $nowTs - $last->updated_at->timestamp <= 6) {
-            $alert = ['type' => 'CANCELLED', 'id' => $last->id];
         }
+        // CANCELLED: tidak ada peringatan. Hitung mundur / peringatan rintangan langsung hilang karena tidak ada lagi PENDING/HELD.
 
         // --- perangkat dan sensor ---
         $devices = Device::with('crossing')->whereIn('crossing_id', $ids)->orderBy('device_code')->get();

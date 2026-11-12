@@ -287,8 +287,7 @@ function drawAlert(a){
   ring.style.display='none';$('am-meta').textContent='Terdeteksi '+a.age+' detik lalu. Peringatan hilang otomatis setelah rel kosong dan palang menutup.';beep();
  }else{
   card.className='am-card info';$('am-ic').innerHTML=ICON.ok;ring.style.display='none';
-  if(a.type==='CANCELLED'){$('am-title').textContent='Peringatan dibatalkan';$('am-text').textContent='Getaran kereta berhenti sebelum waktu habis, jadi palang tidak ditutup.'}
-  else if(a.mode==='MANUAL'){$('am-title').textContent='Palang ditutup petugas';$('am-text').textContent=a.response_ms!=null?'Petugas menutup palang dalam '+(a.response_ms/1000).toFixed(1)+' detik.':'Palang ditutup dengan tombol di pos.'}
+  if(a.mode==='MANUAL'){$('am-title').textContent='Palang ditutup petugas';$('am-text').textContent=a.response_ms!=null?'Petugas menutup palang dalam '+(a.response_ms/1000).toFixed(1)+' detik.':'Palang ditutup dengan tombol di pos.'}
   else{$('am-title').textContent='Palang ditutup otomatis';$('am-text').textContent=a.guard==='NO_RESPONSE'?'Petugas tidak merespons dalam '+a.total+' detik, sistem menutup palang.':'Kereta terdeteksi, palang ditutup otomatis.'}
   $('am-meta').textContent='';
  }
