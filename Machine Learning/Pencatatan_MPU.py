@@ -2,19 +2,22 @@ import serial
 import time
 
 # ==================== KONFIGURASI ====================
-PORT_COM = 'COM4'         # Ubah sesuai Port COM ESP32 di laptop Anda (misal COM3, COM4, COM5)
-BAUDRATE = 115200         # Harus sama dengan Serial.begin di Arduino (115200)
-NAMA_LABEL = 'kereta'     # Ganti label: 'kereta', 'truk', atau 'idle'
+PORT_COM = 'COM4'         # Ubah sesuai Port COM ESP32 di laptop Anda
+BAUDRATE = 115200         # Harus sama dengan Serial.begin di Arduino
+NAMA_LABEL = 'kereta'       # Ganti label: 'kereta', 'truk', atau 'idle'
 DURASI_DETIK = 30         # Durasi rekam per file (misal 30 detik)
+JUMLAH_PERULANGAN = 46   # <-- TAMBAHAN: Jumlah file/sesi yang ingin direkam
 # =====================================================
 
-def rekam_data():
+def rekam_data(sesi_ke):
     try:
+        print(f"\n--- Memulai Sesi {sesi_ke} dari {JUMLAH_PERULANGAN} ---")
         print(f"Menghubungkan ke {PORT_COM}...")
         ser = serial.Serial(PORT_COM, BAUDRATE, timeout=1)
         time.sleep(2)  # Waktu tunggu inisialisasi koneksi serial
 
-        nama_file = f"{NAMA_LABEL}_{int(time.time())}.csv"
+        # Nama file ditambahkan nomor sesi agar rapi
+        nama_file = f"{NAMA_LABEL}_sesi{sesi_ke}_{int(time.time())}.csv"
         print(f"Mulai merekam data label '{NAMA_LABEL}' selama {DURASI_DETIK} detik...")
 
         with open(nama_file, 'w', encoding='utf-8') as f:
@@ -38,4 +41,13 @@ def rekam_data():
         print("Pastikan Serial Monitor di Arduino IDE SUDAH DITUTUP sebelum menjalankan skrip.")
 
 if __name__ == "__main__":
-    rekam_data()
+    # Menjalankan fungsi rekam_data() sebanyak JUMLAH_PERULANGAN
+    for i in range(1, JUMLAH_PERULANGAN + 1):
+        rekam_data(i)
+        
+        # Jeda waktu antar sesi sebelum memulai perekaman berikutnya
+        if i < JUMLAH_PERULANGAN:
+            print("Jeda 3 detik sebelum sesi berikutnya...")
+            time.sleep(3) 
+            
+    print("\nSeluruh proses perekaman telah selesai!")

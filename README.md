@@ -47,7 +47,7 @@ MPU6050 ──I²C──> Node 1 (ESP32 + TinyML)
 | `Node 1 RailSafe/Node1.ino` | Firmware Node 1: MPU6050, TinyML, dan pemancar LoRa. Ini salinan utama; `model_data.h` ada di direktori yang sama. |
 | `Node 1 RailSafe/model_data.h` | Model TinyML hasil ekspor sebagai array byte C++. |
 | `Node 1 RailSafe/Node1/Node1.ino` | Salinan firmware Node 1. Samakan perubahan dengan file utama bila salinan ini masih digunakan. |
-| `Node 2 RailSafe/Node2.ino` | Firmware Node 2: palang, LoRa, LCD, tombol, dua ultrasonik, dan API Laravel. |
+| `Node 2 RailSafe/Node2/Node2.ino` | Firmware Node 2: palang, LoRa, LCD, tombol, dua ultrasonik, dan API Laravel. |
 | `Machine Learning/Kode Arduino/Data MPU/Data MPU.ino` | Sketch untuk mengambil data mentah MPU6050 melalui Serial. |
 | `Machine Learning/Pencatatan MPU.py` | Skrip Python untuk merekam keluaran Serial ke CSV. |
 | `Machine Learning/Dummy File.py` | Pembuat dataset sintetis untuk idle, truk, dan kereta; bukan pengganti dataset pengukuran nyata. |
@@ -113,37 +113,40 @@ Pin ultrasonik kedua ditetapkan di `Node2.ino`; ubah `TRIG_PIN_2` dan `ECHO_PIN_
 1. Membaca enam nilai MPU6050 dalam urutan `accX, accY, accZ, gyroX, gyroY, gyroZ`.
 2. Mengumpulkan 100 sampel (600 nilai) dengan target interval 10 ms.
 3. Menjalankan inferensi TinyML pada setiap jendela yang terkumpul.
-4. Mengirim peringatan jika probabilitas kelas kereta lebih dari `0.70`. Kelas truk di atas `0.75` hanya dicatat di Serial Monitor dan tidak memicu palang.
-5. Paket LoRa peringatan berbentuk:
+4. Mengirim alert jika probabilitas kereta lebih dari `0.70`. Mengirim status-clear jika probabilitas kereta maksimal `0.30` dan idle lebih dari `0.60` atau truk lebih dari `0.75`. Prediksi yang belum pasti tidak mengirim status-clear.
+5. Paket LoRa dari Node 1 terdiri dari:
 
    ```text
    RailSafe:ALERT_KERETA:<confidence>
+   RailSafe:STATUS_CLEAR:0.00
    ```
 
-   Contoh: `RailSafe:ALERT_KERETA:0.83`.
+   `ALERT_KERETA` memulai countdown penutupan. `STATUS_CLEAR` dikirim hanya saat prediksi idle/truk cukup yakin. Status yang hilang atau tidak pasti tidak dianggap sebagai bukti bahwa kereta sudah lewat.
 
 ### Node 2: palang dan sensor
 
-- Node 2 menerima paket LoRa dengan sync word `0xF3` dan hanya memproses paket berawalan `RailSafe:ALERT_KERETA`.
-- Bila salah satu sensor mengukur objek kurang dari 15 cm, Node 2 menunggu satu detik lalu membaca ulang kedua sensor. Jika objek masih terdeteksi, palang tetap terbuka dan fungsi kembali. Peringatan LoRa berikutnya akan mencoba kembali proses tersebut.
-- Jika area terdeteksi kosong pada pembacaan awal atau ulang, servo diperintahkan ke sudut tutup (`90°`). Sudut buka adalah `0°`.
-- Tombol manual men-toggle palang dan mengirim log manual ke server bila Wi-Fi terhubung.
+- Node 2 menerima paket LoRa dengan sync word `0xF3`, yaitu `RailSafe:ALERT_KERETA` dan `RailSafe:STATUS_CLEAR`.
+- Saat alert pertama diterima, Node 2 memulai countdown `countdown_seconds`. Petugas dapat menutup palang manual sebelum countdown habis; jika tidak, Node 2 mencoba menutup otomatis.
+- Jika Node 2 menerima `STATUS_CLEAR` sebelum countdown habis, countdown dibatalkan dan LCD kembali menampilkan status aman/standby.
+- Sebelum penutupan otomatis, dua sensor memeriksa area. Jika salah satu sensor mendeteksi objek kurang dari 15 cm, Node 2 menunggu satu detik dan mengukur ulang. Jika masih terhalang, palang tetap terbuka dan percobaan otomatis diulang tiap dua detik; log `HELD` hanya dikirim sekali selama kondisi tahan tersebut.
+- Penutupan manual mengunci palang hingga tombol ditekan lagi. Pembukaan manual mereset state ke standby. Servo menggunakan sudut tutup `125°` dan sudut buka `0°`.
 - Saat palang tertutup, buzzer dibunyikan dengan pola jeda 150 ms.
-- Palang otomatis dibuka setelah 15 detik sejak peringatan LoRa terakhir. Ini timer prototipe, bukan deteksi kereta lewat.
+- Hanya palang yang ditutup otomatis yang dapat dibuka. Node 2 membuka setelah menerima status `STATUS_CLEAR` segar secara berkelanjutan selama `gate_reopen_seconds` dan palang sudah tertutup setidaknya selama interval tersebut. Status Node 1 yang hilang menahan palang tetap tertutup. Status-clear berasal dari klasifikasi model, bukan konfirmasi fisik kereta sudah lewat.
 
 ### Integrasi Laravel
 
-Node 2 mengirim `POST /api/gate-log` ke alamat yang ditentukan di konstanta `LARAVEL_API`. Payload firmware saat ini:
+Node 2 mengirim `POST /api/gate-log` ke server Laravel (`LARAVEL_HOST`). Payload firmware:
 
 ```json
 {
   "trigger_type": "AUTOMATIC",
+  "gate_action": "CLOSED",
   "confidence_score": 0.83,
   "notes": "Kereta terdeteksi TinyML"
 }
 ```
 
-Untuk aksi tombol, `trigger_type` berisi `MANUAL`. Controller Laravel mengubah skor otomatis dalam rentang 0–1 menjadi persen. Skor manual diabaikan dan disimpan sebagai `null`. Aksi buka/tutup saat ini dikenali dari teks `notes` (teks yang memuat “dibuka” akan disimpan sebagai `OPENED`).
+Untuk aksi tombol manual, `trigger_type` berisi `MANUAL` dengan `gate_action` bernilai `CLOSED` atau `OPENED`. Saat palang ditahan karena rintangan ultrasonik, dikirim `gate_action: "HELD"`. Ketika palang otomatis terbuka kembali setelah status aman terkonfirmasi, Node 2 mengirim log `gate_action: "OPENED"`. Node 2 mengirim `POST /api/heartbeat` tiap 30 detik dan mengambil parameter `GET /api/config` saat boot serta berkala.
 
 ## Menyiapkan firmware ESP32
 
@@ -186,12 +189,13 @@ Ada dua versi firmware Node 1 di repo ini dengan perbedaan library TinyML:
 2. Pasang library sesuai tabel di atas melalui **Tools → Manage Libraries**.
 3. Pilih board **ESP32 Dev Module** dan port COM yang sesuai.
 4. **Node 1:** Buka `Node 1 RailSafe/Node1/Node1.ino`. Pastikan `model_data.h` berada **di folder sketch yang sama**. Firmware memanggil simbol `g_RailSafe_model` dari header tersebut. Upload dan pantau Serial Monitor (115200 baud) — pesan `✅ Model TinyML RailSafe berhasil dimuat.` menandakan model berhasil dimuat.
-5. **Node 2:** Buka `Node 2 RailSafe/Node2.ino`. Sesuaikan konstanta berikut di bagian atas file sebelum upload:
+5. **Node 2:** Buka `Node 2 RailSafe/Node2/Node2.ino`. Sesuaikan konstanta berikut di bagian atas file sebelum upload:
 
    ```cpp
    const char* WIFI_SSID     = "Nama_WiFi_Anda";
    const char* WIFI_PASSWORD = "Password_WiFi_Anda";
-   const char* LARAVEL_API   = "http://<IP-LAN-SERVER>:8000/api/gate-log";
+   const char* LARAVEL_HOST  = "http://<IP-LAN-SERVER>:8000";
+   const char* DEVICE_TOKEN  = "rs_demo_node02_token"; // Bearer token perangkat
    ```
 
 6. Upload ke masing-masing board. Periksa log Serial Monitor untuk memastikan inisialisasi LoRa, sensor, dan Wi-Fi berhasil.
@@ -220,9 +224,9 @@ Ketika 100 sampel terkumpul (1 detik)
  ├─ Salin input_buffer → input_tensor->data.f[]
  ├─ interpreter->Invoke()
  ├─ Baca output: [prob_idle, prob_kereta, prob_truk]
- ├─ prob_kereta > 0.70  → kirimSinyalLoRa("ALERT_KERETA", confidence)
- ├─ prob_truk   > 0.75  → log Serial saja (tidak kirim LoRa)
- └─ lainnya             → "Status Rel: Aman/Idle"
+ ├─ prob_kereta > 0.70  → kirim ALERT_KERETA
+ ├─ prob_kereta ≤ 0.30 dan idle/truk yakin → kirim STATUS_CLEAR
+ └─ prediksi tidak pasti → tidak kirim status aman
 ```
 
 **Detail tensor arena:** `TENSOR_ARENA_SIZE` diset 30 KB (`30 * 1024`). Nilai ini diperlukan karena `AllOpsResolver` mendaftarkan semua operator built-in termasuk `EXPAND_DIMS` dan `RESHAPE` yang disisipkan otomatis saat model Conv1D dikonversi ke TFLite. Naikkan nilai ini jika `AllocateTensors()` gagal.
@@ -234,6 +238,7 @@ Ketika 100 sampel terkumpul (1 detik)
 ```
 RailSafe:ALERT_KERETA:<confidence>
 Contoh: RailSafe:ALERT_KERETA:0.83
+RailSafe:STATUS_CLEAR:0.00
 ```
 
 ### Node 2: alur kendali palang
@@ -246,16 +251,18 @@ Boot
  └─ LoRa.begin(433E6) → setSyncWord(0xF3)
 
 Loop
- ├─ [A] cekTombolManual()         — debounce 400 ms, toggle palang
+ ├─ [A] cekTombolManual()         — tutup manual mengunci palang; buka manual mereset ke standby
  ├─ [B] LoRa.parsePacket()
- │       └─ startsWith("RailSafe:ALERT_KERETA")
+ │       ├─ ALERT_KERETA → mulai/lanjutkan countdown penutupan
+ │       └─ STATUS_CLEAR → mulai/lanjutkan konfirmasi aman
  │           ├─ Parse confidence dari substring setelah ':' terakhir
  │           ├─ lastTrainAlertTime = millis()
- │           └─ isGateClosed == false → tutupPalangOtomatis(confidence)
- ├─ [C] Auto-reset
- │       └─ isGateClosed && !isManualOverride
- │           └─ millis() - lastTrainAlertTime > 15 000 ms → bukaPalang()
- └─ [D] Buzzer: HIGH 150 ms / LOW 150 ms saat palang tertutup
+ │           └─ GATE_STANDBY → mulai countdown `countdown_seconds`
+ ├─ [C] Countdown habis tanpa penutupan manual → cek dua sensor, lalu tutup otomatis
+ ├─ [D] Palang otomatis terbuka setelah status-clear segar terkonfirmasi selama `gate_reopen_seconds`
+ ├─ [E] Palang manual tertutup tidak dibuka timer; tombol buka mengembalikan standby
+ ├─ [F] Ambil konfigurasi dashboard saat boot dan setiap 30 detik
+ └─ [G] Buzzer: HIGH 150 ms / LOW 150 ms saat palang tertutup
 ```
 
 **tutupPalangOtomatis(confidence):**
@@ -265,9 +272,9 @@ Loop
 2. Jika salah satu < 15 cm → tampil "AWAS KENDARAAN!"
    delay(1000) → ukur ulang kedua sensor
    Jika masih terhalang → return (palang tetap terbuka)
-3. isGateClosed = true → servo.write(90°)
-4. LCD "🚨 BAHAYA KERETA / PALANG DITUTUP!"
-5. kirimLogKeLaravel("AUTOMATIC", confidence, "Kereta terdeteksi TinyML")
+3. Jika area aman → `isGateClosed = true`, servo menutup ke 125°, LCD menampilkan "BAHAYA KERETA / PALANG DITUTUP"
+4. Jika area masih terhalang → palang tetap terbuka dan percobaan otomatis diulang
+5. kirimLogKeLaravel("AUTOMATIC", "CLOSED", confidence, "Kereta terdeteksi TinyML")
 ```
 
 **Konstanta yang perlu disesuaikan di Node2.ino:**
@@ -275,10 +282,12 @@ Loop
 | Konstanta | Default | Keterangan |
 | --- | --- | --- |
 | `WIFI_SSID` / `WIFI_PASSWORD` | *(kosong)* | SSID dan kata sandi jaringan |
-| `LARAVEL_API` | `http://192.168.1.10:8000/api/gate-log` | Ganti dengan IP LAN server Laravel |
-| `AUTO_RESET_TIMEOUT` | `15000` ms | Timer buka otomatis setelah sinyal LoRa terakhir |
+| `LARAVEL_HOST` | `http://192.168.1.10:8000` | IP LAN server Laravel (tanpa trailing slash) |
+| `DEVICE_TOKEN` | `rs_demo_node02_token` | Token otentikasi Bearer perangkat Node 2 |
+| `closeCountdownMs` | `15000` ms | Waktu tunggu petugas sebelum Node 2 mencoba menutup otomatis; dari `countdown_seconds` |
+| `autoResetTimeout` | `15000` ms | Durasi status-clear segar sebelum buka otomatis; dari `gate_reopen_seconds` |
 | `TRIG_PIN_2` / `ECHO_PIN_2` | `26` / `25` | Sesuaikan jika sensor ultrasonik kedua dipasang di pin lain |
-| `GATE_OPEN_ANGLE` / `GATE_CLOSE_ANGLE` | `0°` / `90°` | Sesuaikan jika servo terpasang terbalik |
+| `GATE_OPEN_ANGLE` / `GATE_CLOSE_ANGLE` | `0°` / `125°` | Sesuaikan jika servo terpasang terbalik |
 
 ---
 
@@ -470,8 +479,8 @@ Semua rute API perangkat berada di middleware `device.token` dan dibatasi hingga
 | --- | --- |
 | `POST /api/gate-log` | Menyimpan satu aksi palang dari format firmware Node 2 saat ini. |
 | `POST /api/telemetry` | Format telemetri/event yang lebih lengkap; memerlukan `event_id`, `event_type`, `control_mode`, dan `event_timestamp`. |
-| `POST /api/heartbeat` | Memperbarui status perangkat dan kesehatan sensor. Opsional; firmware saat ini belum memanggilnya. |
-| `GET /api/config` | Mengambil nilai pengaturan dari server. Firmware saat ini belum menerapkan nilai tersebut ke ambang/timer lokal. |
+| `POST /api/heartbeat` | Memperbarui status perangkat dan kesehatan sensor; dikirim Node 2 setiap 30 detik saat Wi-Fi tersedia. |
+| `GET /api/config` | Node 2 mengambil `countdown_seconds` dan `gate_reopen_seconds` saat boot dan berkala. `confidence_threshold` belum diterapkan ke Node 1. |
 
 ### Mode demo dan token perangkat
 
@@ -480,7 +489,7 @@ Semua rute API perangkat berada di middleware `device.token` dan dibatasi hingga
 - `false` (nilai default contoh): permintaan tanpa token dipetakan ke perangkat `GATE_CONTROLLER` aktif pertama. Praktis untuk demo lokal satu pos.
 - `true`: wajib mengirim `Authorization: Bearer <token>`.
 
-Token perangkat dapat dibuat/diputar melalui halaman admin perangkat. Hash token disimpan di database; token asli hanya ditampilkan saat dibuat/diputar. Firmware Node 2 saat ini **belum** mengirim header `Authorization`, jadi mode wajib-token tidak akan menerima log sampai firmware dilengkapi token dan header tersebut. Jangan gunakan mode demo di jaringan yang tidak tepercaya.
+Token perangkat dapat dibuat/diputar melalui halaman admin perangkat. Hash token disimpan di database; token asli hanya ditampilkan saat dibuat/diputar. Firmware Node 2 mengirim header `Authorization` memakai `DEVICE_TOKEN`. Jangan gunakan mode demo di jaringan yang tidak tepercaya.
 
 ## Akun dan simulasi demo
 
@@ -514,23 +523,23 @@ php artisan railsafe:simulate
 
 | Pengaturan | Default | Catatan |
 | --- | ---: | --- |
-| `confidence_threshold` | 70 | Persen; sama dengan batas 0.70 di firmware Node 1 saat ini, tetapi nilai dari API belum dibaca firmware. |
-| `gate_reopen_seconds` | 15 | Waktu buka ulang pada ringkasan dashboard dan simulasi. Firmware Node 2 memiliki konstanta 15 detik sendiri. |
-| `countdown_seconds` | 15 | Disediakan untuk alur proposal; belum digunakan firmware saat ini. |
+| `confidence_threshold` | 70 | Persen; Node 1 masih memakai batas tetap 0.70 dan belum membaca nilai dashboard. |
+| `gate_reopen_seconds` | 15 | Durasi status-clear berulang sebelum penutupan otomatis dibuka. Status Node 1 yang hilang menahan palang tertutup; penutupan manual tetap terkunci. |
+| `countdown_seconds` | 15 | Waktu petugas untuk menutup manual sebelum Node 2 menutup otomatis. |
 
-Pengaturan dapat diubah oleh superadmin. Firmware belum mengambil `GET /api/config`, sehingga perubahan di dashboard tidak otomatis mengubah konfigurasi ESP32.
+Pengaturan dapat diubah oleh superadmin. Node 2 mengambil `GET /api/config` saat boot dan berkala setiap 30 detik. Node 1 masih memakai ambang deteksi 0,70 yang ditetapkan di firmware.
 
 ## Batasan yang diketahui
 
-- Pembukaan palang Node 2 menggunakan timeout setelah peringatan terakhir, bukan konfirmasi bahwa kereta telah lewat.
+- Pembukaan otomatis Node 2 memakai paket `STATUS_CLEAR` dari klasifikasi Node 1, bukan sekadar ketiadaan alert. Status-clear tetap bukan konfirmasi fisik kereta benar-benar telah lewat.
 - Jika ultrasonik tidak menerima pantulan, pembacaan dianggap `999 cm` (area kosong). Sensor gagal/terputus karena itu belum ditangani sebagai kondisi fault yang menahan palang.
 - Pemeriksaan objek dilakukan ketika peringatan kereta masuk, bukan pemantauan kontinu di area palang.
-- Tombol manual menggunakan debounce berbasis waktu; menahan tombol dapat menyebabkan toggle berulang.
+- Penutupan manual tetap terkunci hingga petugas menekan tombol untuk membuka kembali; setelah dibuka, sistem kembali standby.
 - Operasi servo, HTTP, `delay()`, dan pembacaan sensor bersifat blocking. Koneksi Wi-Fi/API yang lambat dapat menunda pembacaan LoRa dan tombol.
 - Node 1 mengirim prediksi setiap jendela satu detik saat ambang kereta terlampaui. Sampling aktual dapat berubah akibat waktu inferensi dan operasi lain.
 - Model header tersedia, tetapi pipeline pelatihan/evaluasi, metrik akurasi, data lapangan, serta prosedur kalibrasi pemasangan MPU belum didokumentasikan di repo.
 - Database seeder dan API mode tanpa token ditujukan untuk demo. Kredensial, token, HTTP tanpa TLS, serta alamat IP lokal perlu ditinjau sebelum deployment.
-- Dashboard menampilkan status palang dari log terakhir dan estimasi timer; firmware belum mengirim log saat palang otomatis terbuka kembali.
+- Dashboard menampilkan status palang dari log terakhir dan estimasi timer; Node 2 mengirim log saat palang otomatis terbuka kembali.
 
 ## Pemecahan masalah
 
@@ -538,7 +547,7 @@ Pengaturan dapat diubah oleh superadmin. Firmware belum mengambil `GET /api/conf
 | --- | --- |
 | Node 1 gagal menemukan MPU6050 | Periksa catu daya, ground, SDA 21/SCL 22, dan alamat I²C modul. |
 | Model gagal dimuat | Pastikan `model_data.h` ikut dalam folder sketch dan firmware memanggil `g_RailSafe_model`. Periksa board ESP32 dan library TinyML yang dipasang. |
-| Node 2 tidak menerima peringatan | Pastikan kedua node memakai 433 MHz, sync word `0xF3`, serta format `RailSafe:ALERT_KERETA:<confidence>`. Periksa kabel SPI, antena, dan catu daya LoRa. |
+| Node 2 tidak menerima status LoRa | Pastikan kedua node memakai 433 MHz, sync word `0xF3`, serta format `RailSafe:ALERT_KERETA:<confidence>` / `RailSafe:STATUS_CLEAR:0.00`. Periksa kabel SPI, antena, dan catu daya LoRa. |
 | Palang tidak bergerak | Periksa catu daya servo, ground bersama, sambungan GPIO 13, dan rentang sudut servo. Jangan memberi daya servo dari pin 3,3 V ESP32. |
 | Ultrasonik selalu mendeteksi kosong | Periksa TRIG/ECHO kedua sensor, ground bersama, arah sensor, batas ukur, dan level tegangan ECHO. Ambang firmware saat ini 15 cm. |
 | LCD kosong | Periksa SDA/SCL, alamat I²C `0x27`, kontras, dan catu daya LCD. |
