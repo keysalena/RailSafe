@@ -206,15 +206,19 @@ class TelemetryController extends Controller
         foreach ($sensors as $s) {
             $last = LogSensor::where('device_id', $device->id)->where('sensor_type', $s['type'])
                 ->orderByDesc('reported_at')->orderByDesc('id')->first();
+            $detail = $s['detail'] ?? null;
             if (! $last || $last->operational_state !== $s['state'] || $last->health_status !== $s['health']) {
                 LogSensor::create([
                     'device_id' => $device->id,
                     'sensor_type' => $s['type'],
                     'operational_state' => $s['state'],
                     'health_status' => $s['health'],
-                    'detail' => $s['detail'] ?? null,
+                    'detail' => $detail,
                     'reported_at' => now(),
                 ]);
+            } elseif ($last->detail !== $detail) {
+                // Perbarui telemetri sensor terakhir tanpa membuat baris baru setiap heartbeat.
+                $last->update(['detail' => $detail, 'reported_at' => now()]);
             }
         }
 

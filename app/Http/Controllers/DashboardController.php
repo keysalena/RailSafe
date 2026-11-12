@@ -131,6 +131,8 @@ class DashboardController extends Controller
                 'code' => $d->device_code, 'name' => $d->name, 'type' => $d->type, 'status' => $d->status,
                 'seen_s' => $d->last_seen_at ? now()->timestamp - $d->last_seen_at->timestamp : null,
                 'battery' => $d->battery_level, 'crossing' => $d->crossing->code,
+                'ml_label' => $d->ml_label, 'ml_confidence' => $d->ml_confidence,
+                'distance_cm' => $d->distance_cm, 'rssi' => $d->rssi,
             ]),
             'sensors' => $sensors, 'recent' => $recent,
         ]);

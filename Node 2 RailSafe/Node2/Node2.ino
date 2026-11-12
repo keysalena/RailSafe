@@ -1,16 +1,17 @@
 /*
- * S.I.G.A.P / RailSafe - Node 2 (Pos PJL Receiver + Gate Controller + HMI)
+ * RailSafe - Node 2 (Pos PJL Receiver + Gate Controller + HMI)
  * Hardware: ESP32, LoRa Ra-02, LCD I2C 16x2, Servo MG996R, 2x HC-SR04, Buzzer, Arcade Button
  *
  * ALUR:
  *  1. Sinyal kereta dari Node 1 diterima -> HITUNG MUNDUR 15 detik, buzzer berbunyi, LCD menampilkan sisa waktu.
  *     Dashboard menampilkan kotak peringatan dengan hitung mundur yang sama.
- *  2. Petugas menekan tombol sebelum waktu habis -> palang ditutup manual.
+ *  2. Petugas menahan tombol -> palang ditutup manual; tombol dilepas -> palang dibuka kembali.
  *  3. Waktu habis tanpa respons:
  *       - Salah satu / kedua HC-SR04 mendeteksi rintangan -> palang DITAHAN terbuka, sirine menyala,
  *         dashboard memberi peringatan "Rel terhalang". Begitu rintangan hilang, palang menutup otomatis.
  *       - Tidak ada rintangan -> palang menutup otomatis (fail-safe).
- *  4. Palang terbuka otomatis AUTO_RESET_TIMEOUT setelah sinyal kereta terakhir (penutupan otomatis saja).
+ *  4. Palang otomatis terbuka setelah Node 1 mengirim STATUS_CLEAR berulang dan
+ *     konfirmasi aman bertahan selama AUTO_RESET_TIMEOUT. Penutupan manual terkunci.
  */
 
 #include <Wire.h>
@@ -22,18 +23,19 @@
 #include <HTTPClient.h>
 
 // ==================== KONFIGURASI WIFI & LARAVEL ====================
-const char* WIFI_SSID     = "Nama_WiFi_Anda";      // Ganti SSID WiFi
-const char* WIFI_PASSWORD = "Password_WiFi_Anda";  // Ganti Password WiFi
-const char* LARAVEL_BASE  = "http://192.168.1.10:8000/api"; // IP Laptop/Server Laravel, tanpa garis miring di akhir
-const char* API_TOKEN     = "rs_demo_node02_token";  // Isi token NODE-02 jika RAILSAFE_REQUIRE_TOKEN=true di server
+const char* WIFI_SSID     = "yuem";      // Ganti SSID WiFi
+const char* WIFI_PASSWORD = "ujiansmk";  // Ganti Password WiFi
+const char* LARAVEL_BASE  = "http://10.33.187.52:8000/api"; // Base endpoint API Laravel
+const char* API_TOKEN_NODE1 = "rs_demo_node01_token"; // Token perangkat NODE-01
+const char* API_TOKEN_NODE2 = "rs_demo_node02_token"; // Token perangkat NODE-02
 
 // ==================== PINOUT HARDWARE ====================
 #define LORA_SCK  18
 #define LORA_MISO 19
 #define LORA_MOSI 23
-#define LORA_SS   5
+#define LORA_SS    5
 #define LORA_RST  14
-#define LORA_DIO0 2
+#define LORA_DIO0  2
 
 #define SERVO_PIN  13
 #define BUZZER_PIN 15
@@ -53,11 +55,11 @@ Servo gateServo;
 
 // Posisi Palang Pintu (Sudut Servo)
 const int GATE_OPEN_ANGLE  = 0;   // Palang Terbuka
-const int GATE_CLOSE_ANGLE = 90;  // Palang Tertutup
+const int GATE_CLOSE_ANGLE = 125;  // Palang Tertutup
 
 // ==================== PARAMETER (bisa ditimpa dari /api/config) ====================
 unsigned long COUNTDOWN_MS       = 15000; // Waktu petugas menutup palang sebelum fail-safe
-unsigned long AUTO_RESET_TIMEOUT = 15000; // Palang terbuka lagi sekian ms setelah sinyal kereta terakhir
+unsigned long AUTO_RESET_TIMEOUT = 15000; // Konfirmasi status aman sebelum auto-open
 const long OBSTACLE_CM = 15;              // Jarak di bawah ini dianggap ada rintangan
 
 // ==================== STATUS SISTEM ====================
@@ -69,13 +71,26 @@ float lastConfidence = 0.0;
 int obstacleClearCount = 0;
 int lastShownSec = -1;
 bool beepOn = false;
+bool buttonRawState = false;
+bool buttonStableState = false;
+bool manualCloseHeld = false;
+String node1MlLabel = "UNKNOWN";
+float node1MlConfidence = 0.0;
 
-unsigned long lastButtonPress = 0;
 unsigned long lastTrainAlertTime = 0;
+unsigned long lastNodeStatusTime = 0;
+unsigned long noTrainSince = 0;
+unsigned long autoClosedAt = 0;
+unsigned long lastNode1StatusAt = 0;
 unsigned long countdownStart = 0;
 unsigned long lastObstacleCheck = 0;
 unsigned long lastBeep = 0;
 unsigned long lastHeartbeat = 0;
+unsigned long lastConfigRefresh = 0;
+unsigned long buttonStateChangedAt = 0;
+const unsigned long NODE_STATUS_STALE_MS = 3500;
+const unsigned long CONFIG_REFRESH_MS = 30000;
+const unsigned long BUTTON_DEBOUNCE_MS = 40;
 
 void setup() {
   Serial.begin(115200);
@@ -100,9 +115,10 @@ void setup() {
   bukaPalang(); // Posisi Awal: Terbuka
 
   // 3. Setup LCD I2C
+  Wire.begin(21, 22); // SDA 21, SCL 22 pada ESP32
   lcd.init();
   lcd.backlight();
-  tampilkanStatusLCD("S.I.G.A.P READY", "STATUS: AMAN");
+  tampilkanStatusLCD("RailSafe READY", "STATUS: AMAN");
 
   // 4. Setup WiFi (Opsional untuk kirim telemetri ke Laravel)
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -119,6 +135,7 @@ void setup() {
   } else {
     Serial.println("\nWiFi Offline (Mode Standalone/LoRa Only)");
   }
+  lastConfigRefresh = millis();
 
   // 5. Setup LoRa Ra-02 (433 MHz)
   SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_SS);
@@ -137,7 +154,11 @@ void loop() {
   bacaLoRa();          // B. Sinyal kereta dari Node 1
   prosesKeadaan();     // C. Hitung mundur, rintangan, auto reset
   perbaruiBuzzer();    // D. Buzzer/sirine tanpa delay()
-  kirimHeartbeat();    // E. Status berkala ke dashboard (hanya saat siaga)
+  kirimHeartbeat();    // E. Status kedua node dikirim berkala ke dashboard
+  if (millis() - lastConfigRefresh >= CONFIG_REFRESH_MS) {
+    lastConfigRefresh = millis();
+    ambilKonfigurasi();
+  }
 }
 
 // ==================== ALUR UTAMA ====================
@@ -152,8 +173,21 @@ void bacaLoRa() {
   }
   Serial.println("LoRa Received: " + incomingMsg);
 
-  // Format sinyal: "SIGAP:ALERT_KERETA:<confidence>"
-  if (incomingMsg.startsWith("SIGAP:ALERT_KERETA")) {
+  // Telemetri Node 1: RailSafe:NODE_STATUS:<label>:<confidence>
+  if (incomingMsg.startsWith("RailSafe:NODE_STATUS:")) {
+    const int labelStart = String("RailSafe:NODE_STATUS:").length();
+    int separator = incomingMsg.indexOf(':', labelStart);
+    if (separator > labelStart) {
+      String label = incomingMsg.substring(labelStart, separator);
+      float confidence = incomingMsg.substring(separator + 1).toFloat();
+      if (label == "IDLE" || label == "TRUK" || label == "KERETA") {
+        node1MlLabel = label;
+        node1MlConfidence = confidence;
+        lastNode1StatusAt = millis();
+        Serial.printf("Status Node 1: %s (%.1f%%)\n", label.c_str(), confidence * 100.0f);
+      }
+    }
+  } else if (incomingMsg.startsWith("RailSafe:ALERT_KERETA")) {
     float confidence = 0.0;
     int lastColon = incomingMsg.lastIndexOf(':');
     if (lastColon != -1) {
@@ -161,10 +195,26 @@ void bacaLoRa() {
     }
 
     lastTrainAlertTime = millis(); // Sinyal berulang memperpanjang waktu palang tertutup
+    lastNodeStatusTime = lastTrainAlertTime;
+    noTrainSince = 0;
     lastConfidence = confidence;
 
     if (keadaan == SIAGA) {
       mulaiHitungMundur(confidence);
+    }
+  } else if (incomingMsg.startsWith("RailSafe:STATUS_CLEAR")) {
+    lastNodeStatusTime = millis();
+    if (noTrainSince == 0) noTrainSince = lastNodeStatusTime;
+
+    // Batalkan penutupan yang masih tertunda saat Node 1 yakin kereta sudah tidak terdeteksi.
+    if (keadaan == HITUNG_MUNDUR || keadaan == TERHALANG) {
+      keadaan = SIAGA;
+      countdownStart = 0;
+      lastShownSec = -1;
+      obstacleClearCount = 0;
+      digitalWrite(BUZZER_PIN, LOW);
+      tampilkanStatusLCD("RailSafe READY", "STATUS: AMAN");
+      Serial.println("STATUS_CLEAR diterima; penutupan tertunda dibatalkan.");
     }
   }
 }
@@ -213,18 +263,27 @@ void prosesKeadaan() {
       break;
 
     case TERTUTUP:
-      // Auto reset hanya untuk penutupan otomatis. Penutupan manual dibuka petugas dengan tombol.
-      if (!ditutupManual && now - lastTrainAlertTime > AUTO_RESET_TIMEOUT) {
+      // Auto-open hanya untuk palang otomatis dengan STATUS_CLEAR segar berkelanjutan.
+      if (!ditutupManual && noTrainSince != 0 &&
+          now - lastNodeStatusTime <= NODE_STATUS_STALE_MS &&
+          now - noTrainSince >= AUTO_RESET_TIMEOUT &&
+          now - autoClosedAt >= AUTO_RESET_TIMEOUT) {
         Serial.println("Waktu penutupan selesai. Membuka palang kembali...");
         bukaPalang();
         keadaan = SIAGA;
-        tampilkanStatusLCD("S.I.G.A.P READY", "STATUS: AMAN");
+        tampilkanStatusLCD("RailSafe READY", "STATUS: AMAN");
         kirimGateLog("AUTOMATIC", 0, "Dibuka otomatis setelah kereta lewat", "OPENED", -1);
       }
       break;
 
     default:
       break;
+  }
+
+  // Paket STATUS_CLEAR yang kedaluwarsa berarti status Node 1 tidak diketahui.
+  if (noTrainSince != 0 && now - lastNodeStatusTime > NODE_STATUS_STALE_MS) {
+    noTrainSince = 0;
+    Serial.println("STATUS_CLEAR Node 1 kedaluwarsa; auto-open ditahan.");
   }
 }
 
@@ -249,6 +308,7 @@ void tutupPalangOtomatis(String notes) {
   keadaan = TERTUTUP;
   ditutupManual = false;
   lastTrainAlertTime = millis(); // Hitung auto reset dimulai dari sekarang
+  autoClosedAt = millis();
   tampilkanStatusLCD("PALANG DITUTUP", "OTOMATIS");
   kirimGateLog("AUTOMATIC", lastConfidence, notes, "CLOSED", 0);
 }
@@ -258,6 +318,7 @@ void tutupPalangManual(bool dalamHitungMundur) {
   keadaan = TERTUTUP;
   ditutupManual = true;
   lastTrainAlertTime = millis();
+  autoClosedAt = 0;
   tampilkanStatusLCD("MANUAL OVERRIDE", "PALANG DITUTUP");
   kirimGateLog("MANUAL", 0,
                dalamHitungMundur ? "Ditutup petugas saat hitung mundur (Arcade Button)"
@@ -267,30 +328,42 @@ void tutupPalangManual(bool dalamHitungMundur) {
 
 void bukaPalang() {
   ditutupManual = false;
+  autoClosedAt = 0;
+  countdownStart = 0;
   gateServo.write(GATE_OPEN_ANGLE);
   digitalWrite(BUZZER_PIN, LOW);
 }
 
 void cekTombolManual() {
-  if (digitalRead(BUTTON_PIN) != LOW) return;          // Active LOW
-  if (millis() - lastButtonPress < 400) return;        // Debounce 400ms
-  lastButtonPress = millis();
+  bool rawPressed = digitalRead(BUTTON_PIN) == LOW; // Active LOW
+  unsigned long now = millis();
 
-  switch (keadaan) {
-    case SIAGA:
-      tutupPalangManual(false);
-      break;
-    case HITUNG_MUNDUR:
-      tutupPalangManual(true);   // Petugas merespons: ambil alih sebelum waktu habis
-      break;
-    case TERTUTUP:
+  if (rawPressed != buttonRawState) {
+    buttonRawState = rawPressed;
+    buttonStateChangedAt = now;
+  }
+  if (now - buttonStateChangedAt < BUTTON_DEBOUNCE_MS || buttonStableState == buttonRawState) return;
+
+  buttonStableState = buttonRawState;
+  if (buttonStableState) {
+    // Tepi tekan: tutup dan tahan palang selama tombol tetap ditekan.
+    if (keadaan == SIAGA || keadaan == HITUNG_MUNDUR) {
+      bool duringCountdown = keadaan == HITUNG_MUNDUR;
+      tutupPalangManual(duringCountdown);
+      manualCloseHeld = true;
+    } else if (keadaan == TERHALANG) {
+      Serial.println("Tombol manual diabaikan selama sensor mendeteksi rintangan.");
+    }
+    // Jika palang sudah tertutup otomatis, tombol tidak membukanya.
+  } else if (manualCloseHeld) {
+    // Tepi lepas: hanya pembukaan manual yang dipicu oleh tombol ini.
+    manualCloseHeld = false;
+    if (keadaan == TERTUTUP && ditutupManual) {
       bukaPalang();
       keadaan = SIAGA;
-      tampilkanStatusLCD("MANUAL OVERRIDE", "PALANG DIBUKA");
-      kirimGateLog("MANUAL", 0, "Dibuka manual via Arcade Button", "OPENED", -1);
-      break;
-    case TERHALANG:
-      break; // Keselamatan: tombol diabaikan selama ada rintangan di rel
+      tampilkanStatusLCD("RailSafe READY", "STATUS: AMAN");
+      kirimGateLog("MANUAL", 0, "Dibuka saat Arcade Button dilepas", "OPENED", -1);
+    }
   }
 }
 
@@ -363,14 +436,16 @@ void tampilkanStatusLCD(String baris1, String baris2) {
 
 // ==================== FUNGSI REST API LARAVEL ====================
 
-void kirimJson(String path, String json) {
+void kirimJson(String path, String json, const char* deviceToken) {
   if (WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
   http.setTimeout(1500); // Jangan menahan tombol/hitung mundur terlalu lama jika server lambat
   http.begin(String(LARAVEL_BASE) + path);
   http.addHeader("Content-Type", "application/json");
-  if (strlen(API_TOKEN) > 0) http.addHeader("Authorization", String("Bearer ") + API_TOKEN);
+  if (deviceToken && strlen(deviceToken) > 0) {
+    http.addHeader("Authorization", String("Bearer ") + deviceToken);
+  }
 
   int httpResponseCode = http.POST(json);
   Serial.printf("HTTP POST %s -> %d\n", path.c_str(), httpResponseCode);
@@ -383,7 +458,7 @@ void kirimAlert(float confidence) {
   json += "\"confidence_score\":" + String(confidence, 2) + ",";
   json += "\"notes\":\"Getaran kereta terdeteksi, menunggu petugas\"";
   json += "}";
-  kirimJson("/alert", json);
+  kirimJson("/alert", json, API_TOKEN_NODE2);
 }
 
 // Hasil aksi palang. obstacle: 1 = ada rintangan, 0 = tidak, -1 = tidak dikirim
@@ -395,12 +470,11 @@ void kirimGateLog(String triggerType, float confidence, String notes, String act
   json += "\"gate_action\":\"" + action + "\"";
   if (obstacle >= 0) json += String(",\"obstacle_detected\":") + (obstacle ? "true" : "false");
   json += "}";
-  kirimJson("/gate-log", json);
+  kirimJson("/gate-log", json, API_TOKEN_NODE2);
 }
 
-// Status berkala (30 detik) agar dashboard tahu Node 2 masih hidup. Hanya saat siaga.
+// Kirim heartbeat masing-masing perangkat dengan token yang mengidentifikasi node-nya.
 void kirimHeartbeat() {
-  if (keadaan != SIAGA) return;
   if (millis() - lastHeartbeat < 30000) return;
   lastHeartbeat = millis();
 
@@ -409,13 +483,31 @@ void kirimHeartbeat() {
   long jarak2 = ukurJarakHCSR04(TRIG_PIN_2, ECHO_PIN_2);
   long jarakTerdekat = min(jarak1, jarak2); // Tetap kompatibel dengan field distance_cm di Laravel
 
-  String json = "{";
-  json += "\"rssi\":" + String(LoRa.packetRssi()) + ",";
-  json += "\"distance_cm\":" + String(jarakTerdekat) + ",";
-  json += "\"distance_1_cm\":" + String(jarak1) + ",";
-  json += "\"distance_2_cm\":" + String(jarak2);
-  json += "}";
-  kirimJson("/heartbeat", json);
+  String node2Json = "{";
+  node2Json += "\"firmware_version\":\"RailSafe-Node2\",";
+  node2Json += "\"rssi\":" + String(LoRa.packetRssi()) + ",";
+  node2Json += "\"distance_cm\":" + String(jarakTerdekat) + ",";
+  node2Json += "\"sensors\":[";
+  node2Json += "{\"type\":\"LORA\",\"state\":\"ACTIVE\",\"health\":\"OK\",\"detail\":\"Penerima LoRa aktif\"},";
+  node2Json += "{\"type\":\"SERVO\",\"state\":\"" + String(keadaan == TERTUTUP ? "ACTIVE" : "STANDBY") + "\",\"health\":\"OK\",\"detail\":\"" + String(keadaan == TERTUTUP ? "Palang tertutup" : "Palang terbuka") + "\"},";
+  node2Json += "{\"type\":\"ULTRASONIC_1\",\"state\":\"ACTIVE\",\"health\":\"OK\",\"detail\":\"" + String(jarak1) + " cm\"},";
+  node2Json += "{\"type\":\"ULTRASONIC_2\",\"state\":\"ACTIVE\",\"health\":\"OK\",\"detail\":\"" + String(jarak2) + " cm\"}]}";
+  kirimJson("/heartbeat", node2Json, API_TOKEN_NODE2);
+
+  // Node 1 dianggap masih terhubung hanya bila paket status LoRa-nya baru.
+  // Jika paket berhenti, heartbeat NODE-01 juga berhenti agar dashboard menandai offline.
+  if (lastNode1StatusAt != 0 && millis() - lastNode1StatusAt <= 15000) {
+    String node1Json = "{";
+    node1Json += "\"firmware_version\":\"RailSafe-Node1\",";
+    node1Json += "\"ml_label\":\"" + node1MlLabel + "\",";
+    node1Json += "\"ml_confidence\":" + String(node1MlConfidence * 100.0f, 2) + ",";
+    node1Json += "\"sensors\":[";
+    node1Json += "{\"type\":\"MPU6050\",\"state\":\"ACTIVE\",\"health\":\"OK\",\"detail\":\"TinyML " + node1MlLabel + " " + String(node1MlConfidence * 100.0f, 1) + "%\"},";
+    node1Json += "{\"type\":\"LORA\",\"state\":\"ACTIVE\",\"health\":\"OK\",\"detail\":\"Status diterima " + String((millis() - lastNode1StatusAt) / 1000) + " dtk lalu\"}]}";
+    kirimJson("/heartbeat", node1Json, API_TOKEN_NODE1);
+  } else {
+    Serial.println("Heartbeat NODE-01 dilewati: status LoRa Node 1 sudah kedaluwarsa.");
+  }
 }
 
 // Ambil parameter dari dashboard (Parameter sistem). Restart Node 2 setelah mengubahnya.
@@ -431,7 +523,7 @@ void ambilKonfigurasi() {
   http.setTimeout(2000);
   http.begin(String(LARAVEL_BASE) + "/config");
   http.addHeader("Accept", "application/json");
-  if (strlen(API_TOKEN) > 0) http.addHeader("Authorization", String("Bearer ") + API_TOKEN);
+  if (strlen(API_TOKEN_NODE2) > 0) http.addHeader("Authorization", String("Bearer ") + API_TOKEN_NODE2);
 
   if (http.GET() == 200) {
     String body = http.getString();
