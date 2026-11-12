@@ -51,6 +51,8 @@ int sample_index = 0;
 
 unsigned long lastSampleTime = 0;
 const unsigned long SAMPLING_PERIOD_MS = 10; // 100 Hz
+unsigned long lastNodeStatusSentAt = 0;
+const unsigned long NODE_STATUS_INTERVAL_MS = 5000; // Status berkala ke Node 2
 
 // Prototipe Fungsi
 void kirimSinyalLoRa(String status, float confidence);
@@ -155,10 +157,29 @@ void loop() {
       if (prob_kereta > 0.70) { // Threshold keyakinan 70%
         Serial.println("🚨 KERETA TERDETEKSI! Mengirim sinyal LoRa ke Pos PJL...");
         kirimSinyalLoRa("ALERT_KERETA", prob_kereta);
+      } else if (prob_kereta <= 0.30 && (prob_idle > 0.60 || prob_truk > 0.75)) {
+        // Status aman yang tegas diperlukan Node 2 untuk membuka penutupan otomatis.
+        Serial.println("🟢 Tidak ada kereta terdeteksi. Mengirim status aman ke Pos PJL...");
+        kirimSinyalLoRa("STATUS_CLEAR", 0.0);
       } else if (prob_truk > 0.75) {
-        Serial.println("🚛 Truk melintas (Diabaikan).");
+        Serial.println("🚛 Truk melintas; keyakinan kereta belum cukup untuk status aman.");
       } else {
-        Serial.println("🟢 Status Rel: Aman/Idle.");
+        Serial.println("⚠️ Prediksi belum cukup pasti; tidak mengirim status aman.");
+      }
+      // Node 1 tidak mengakses Laravel langsung. Status TinyML dikirim via LoRa
+      // setiap 5 detik agar Node 2 dapat meneruskannya ke dashboard.
+      if (millis() - lastNodeStatusSentAt >= NODE_STATUS_INTERVAL_MS) {
+        const char* label = "IDLE";
+        float confidence = prob_idle;
+        if (prob_kereta >= prob_idle && prob_kereta >= prob_truk) {
+          label = "KERETA";
+          confidence = prob_kereta;
+        } else if (prob_truk >= prob_idle && prob_truk >= prob_kereta) {
+          label = "TRUK";
+          confidence = prob_truk;
+        }
+        kirimSinyalLoRa(String("NODE_STATUS:") + label, confidence);
+        lastNodeStatusSentAt = millis();
       }
     }
   }

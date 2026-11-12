@@ -119,19 +119,20 @@ Pin ultrasonik kedua ditetapkan di `Node2.ino`; ubah `TRIG_PIN_2` dan `ECHO_PIN_
    ```text
    RailSafe:ALERT_KERETA:<confidence>
    RailSafe:STATUS_CLEAR:0.00
+   RailSafe:NODE_STATUS:<IDLE|TRUK|KERETA>:<confidence>
    ```
 
-   `ALERT_KERETA` memulai countdown penutupan. `STATUS_CLEAR` dikirim hanya saat prediksi idle/truk cukup yakin. Status yang hilang atau tidak pasti tidak dianggap sebagai bukti bahwa kereta sudah lewat.
+   `ALERT_KERETA` memulai countdown penutupan. `STATUS_CLEAR` dikirim hanya saat prediksi idle/truk cukup yakin. `NODE_STATUS` dikirim tiap 5 detik dengan kelas TinyML dan confidence agar Node 2 memperbarui status Node 1 di dashboard. Status yang hilang atau tidak pasti tidak dianggap sebagai bukti bahwa kereta sudah lewat.
 
 ### Node 2: palang dan sensor
 
-- Node 2 menerima paket LoRa dengan sync word `0xF3`, yaitu `RailSafe:ALERT_KERETA` dan `RailSafe:STATUS_CLEAR`.
+- Node 2 menerima paket LoRa dengan sync word `0xF3`: `ALERT_KERETA`, `STATUS_CLEAR`, dan `NODE_STATUS` dari Node 1.
 - Saat alert pertama diterima, Node 2 memulai countdown `countdown_seconds`. Petugas dapat menutup palang manual sebelum countdown habis; jika tidak, Node 2 mencoba menutup otomatis.
 - Jika Node 2 menerima `STATUS_CLEAR` sebelum countdown habis, countdown dibatalkan dan LCD kembali menampilkan status aman/standby.
 - Sebelum penutupan otomatis, dua sensor memeriksa area. Jika salah satu sensor mendeteksi objek kurang dari 15 cm, Node 2 menunggu satu detik dan mengukur ulang. Jika masih terhalang, palang tetap terbuka dan percobaan otomatis diulang tiap dua detik; log `HELD` hanya dikirim sekali selama kondisi tahan tersebut.
-- Penutupan manual mengunci palang hingga tombol ditekan lagi. Pembukaan manual mereset state ke standby. Servo menggunakan sudut tutup `125°` dan sudut buka `0°`.
+- Tombol arcade bekerja dengan mode tahan: saat ditekan palang menutup manual, saat dilepas palang terbuka dan sistem kembali standby. Tombol yang ditekan ketika sensor mendeteksi rintangan diabaikan.
 - Saat palang tertutup, buzzer dibunyikan dengan pola jeda 150 ms.
-- Hanya palang yang ditutup otomatis yang dapat dibuka. Node 2 membuka setelah menerima status `STATUS_CLEAR` segar secara berkelanjutan selama `gate_reopen_seconds` dan palang sudah tertutup setidaknya selama interval tersebut. Status Node 1 yang hilang menahan palang tetap tertutup. Status-clear berasal dari klasifikasi model, bukan konfirmasi fisik kereta sudah lewat.
+- Timer `gate_reopen_seconds` hanya membuka palang yang ditutup otomatis setelah `STATUS_CLEAR` segar diterima berkelanjutan dan palang tertutup setidaknya selama interval tersebut. Palang manual menutup selama tombol ditahan dan terbuka saat tombol dilepas. Status Node 1 yang hilang menahan palang otomatis tetap tertutup. Status-clear berasal dari klasifikasi model, bukan konfirmasi fisik kereta sudah lewat.
 
 ### Integrasi Laravel
 
@@ -146,7 +147,7 @@ Node 2 mengirim `POST /api/gate-log` ke server Laravel (`LARAVEL_HOST`). Payload
 }
 ```
 
-Untuk aksi tombol manual, `trigger_type` berisi `MANUAL` dengan `gate_action` bernilai `CLOSED` atau `OPENED`. Saat palang ditahan karena rintangan ultrasonik, dikirim `gate_action: "HELD"`. Ketika palang otomatis terbuka kembali setelah status aman terkonfirmasi, Node 2 mengirim log `gate_action: "OPENED"`. Node 2 mengirim `POST /api/heartbeat` tiap 30 detik dan mengambil parameter `GET /api/config` saat boot serta berkala.
+Untuk aksi tombol manual, `trigger_type` berisi `MANUAL` dengan `gate_action` bernilai `CLOSED` atau `OPENED`. Saat palang ditahan karena rintangan ultrasonik, dikirim `gate_action: "HELD"`. Ketika palang otomatis terbuka kembali setelah status aman terkonfirmasi, Node 2 mengirim log `gate_action: "OPENED"`. Tiap 30 detik Node 2 mengirim heartbeat dengan token NODE-02 dan meneruskan status terbaru Node 1 dengan token NODE-01; heartbeat Node 1 dilewati jika paket LoRa statusnya sudah kedaluwarsa. Node 2 juga mengambil parameter `GET /api/config` saat boot serta berkala.
 
 ## Menyiapkan firmware ESP32
 
@@ -251,16 +252,14 @@ Boot
  └─ LoRa.begin(433E6) → setSyncWord(0xF3)
 
 Loop
- ├─ [A] cekTombolManual()         — tutup manual mengunci palang; buka manual mereset ke standby
+ ├─ [A] cekTombolManual()         — tombol ditahan untuk menutup; dilepas untuk membuka manual
  ├─ [B] LoRa.parsePacket()
  │       ├─ ALERT_KERETA → mulai/lanjutkan countdown penutupan
- │       └─ STATUS_CLEAR → mulai/lanjutkan konfirmasi aman
- │           ├─ Parse confidence dari substring setelah ':' terakhir
- │           ├─ lastTrainAlertTime = millis()
- │           └─ GATE_STANDBY → mulai countdown `countdown_seconds`
+ │       └─ STATUS_CLEAR → batalkan countdown yang belum selesai dan tampilkan status aman
+ │           └─ Jika palang otomatis tertutup, lanjutkan konfirmasi aman
  ├─ [C] Countdown habis tanpa penutupan manual → cek dua sensor, lalu tutup otomatis
  ├─ [D] Palang otomatis terbuka setelah status-clear segar terkonfirmasi selama `gate_reopen_seconds`
- ├─ [E] Palang manual tertutup tidak dibuka timer; tombol buka mengembalikan standby
+ ├─ [E] Palang yang ditutup otomatis hanya dibuka oleh konfirmasi status aman; tombol manual mengendalikan tutup selama ditekan
  ├─ [F] Ambil konfigurasi dashboard saat boot dan setiap 30 detik
  └─ [G] Buzzer: HIGH 150 ms / LOW 150 ms saat palang tertutup
 ```
@@ -479,7 +478,7 @@ Semua rute API perangkat berada di middleware `device.token` dan dibatasi hingga
 | --- | --- |
 | `POST /api/gate-log` | Menyimpan satu aksi palang dari format firmware Node 2 saat ini. |
 | `POST /api/telemetry` | Format telemetri/event yang lebih lengkap; memerlukan `event_id`, `event_type`, `control_mode`, dan `event_timestamp`. |
-| `POST /api/heartbeat` | Memperbarui status perangkat dan kesehatan sensor; dikirim Node 2 setiap 30 detik saat Wi-Fi tersedia. |
+| `POST /api/heartbeat` | Memperbarui status NODE-01 dan NODE-02, label/confidence TinyML, jarak dua sensor ultrasonik, dan kesehatan sensor. Node 2 mengirim heartbeat kedua perangkat tiap 30 detik saat Wi-Fi tersedia. |
 | `GET /api/config` | Node 2 mengambil `countdown_seconds` dan `gate_reopen_seconds` saat boot dan berkala. `confidence_threshold` belum diterapkan ke Node 1. |
 
 ### Mode demo dan token perangkat
@@ -524,7 +523,7 @@ php artisan railsafe:simulate
 | Pengaturan | Default | Catatan |
 | --- | ---: | --- |
 | `confidence_threshold` | 70 | Persen; Node 1 masih memakai batas tetap 0.70 dan belum membaca nilai dashboard. |
-| `gate_reopen_seconds` | 15 | Durasi status-clear berulang sebelum penutupan otomatis dibuka. Status Node 1 yang hilang menahan palang tertutup; penutupan manual tetap terkunci. |
+| `gate_reopen_seconds` | 15 | Durasi status-clear berulang sebelum penutupan otomatis dibuka. Status Node 1 yang hilang menahan palang otomatis tertutup. |
 | `countdown_seconds` | 15 | Waktu petugas untuk menutup manual sebelum Node 2 menutup otomatis. |
 
 Pengaturan dapat diubah oleh superadmin. Node 2 mengambil `GET /api/config` saat boot dan berkala setiap 30 detik. Node 1 masih memakai ambang deteksi 0,70 yang ditetapkan di firmware.
@@ -534,7 +533,7 @@ Pengaturan dapat diubah oleh superadmin. Node 2 mengambil `GET /api/config` saat
 - Pembukaan otomatis Node 2 memakai paket `STATUS_CLEAR` dari klasifikasi Node 1, bukan sekadar ketiadaan alert. Status-clear tetap bukan konfirmasi fisik kereta benar-benar telah lewat.
 - Jika ultrasonik tidak menerima pantulan, pembacaan dianggap `999 cm` (area kosong). Sensor gagal/terputus karena itu belum ditangani sebagai kondisi fault yang menahan palang.
 - Pemeriksaan objek dilakukan ketika peringatan kereta masuk, bukan pemantauan kontinu di area palang.
-- Penutupan manual tetap terkunci hingga petugas menekan tombol untuk membuka kembali; setelah dibuka, sistem kembali standby.
+- Palang yang ditutup otomatis tetap terkunci sampai status aman terkonfirmasi. Penutupan manual berlangsung selama tombol ditahan; saat tombol dilepas palang terbuka dan sistem kembali standby.
 - Operasi servo, HTTP, `delay()`, dan pembacaan sensor bersifat blocking. Koneksi Wi-Fi/API yang lambat dapat menunda pembacaan LoRa dan tombol.
 - Node 1 mengirim prediksi setiap jendela satu detik saat ambang kereta terlampaui. Sampling aktual dapat berubah akibat waktu inferensi dan operasi lain.
 - Model header tersedia, tetapi pipeline pelatihan/evaluasi, metrik akurasi, data lapangan, serta prosedur kalibrasi pemasangan MPU belum didokumentasikan di repo.
