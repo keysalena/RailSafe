@@ -63,7 +63,9 @@ class TelemetryController extends Controller
     /**
      * POST /api/gate-log : hasil aksi palang.
      * Body: trigger_type (AUTOMATIC|MANUAL), confidence_score, notes,
-     *       gate_action (CLOSED|OPENED|HELD, opsional), obstacle_detected (opsional).
+     *       gate_action (CLOSED|OPENED|HELD|CANCELLED, opsional), obstacle_detected (opsional).
+     * CANCELLED: getaran kereta berhenti (STATUS_CLEAR) sebelum palang ditutup, hitung mundur atau
+     * penahanan karena rintangan dibatalkan.
      * Jika ada alert PENDING yang masih berjalan, baris itu diselesaikan (bukan dibuat baru).
      */
     public function gateLog(Request $request)
@@ -75,7 +77,7 @@ class TelemetryController extends Controller
             'trigger_type' => 'required|in:AUTOMATIC,MANUAL',
             'confidence_score' => 'nullable|numeric|min:0|max:100',
             'notes' => 'nullable|string|max:255',
-            'gate_action' => 'nullable|in:CLOSED,OPENED,HELD',
+            'gate_action' => 'nullable|in:CLOSED,OPENED,HELD,CANCELLED',
             'obstacle_detected' => 'nullable|boolean',
         ]);
 
@@ -86,6 +88,10 @@ class TelemetryController extends Controller
         $obstacle = array_key_exists('obstacle_detected', $data) ? (bool) $data['obstacle_detected'] : null;
 
         $device->update(['last_seen_at' => now(), 'connection_status' => 'ACTIVE']);
+
+        if ($action === 'CANCELLED') {
+            return $this->cancel($device, $notes);
+        }
 
         $pending = in_array($action, ['CLOSED', 'HELD'], true) ? $this->openPending($device) : null;
 
@@ -116,6 +122,31 @@ class TelemetryController extends Controller
         }
 
         return response()->json(['ok' => true, 'id' => $log->id, 'event_id' => $log->event_id], 201);
+    }
+
+    /** Pembatalan dari firmware: hitung mundur (PENDING) atau penahanan rintangan (HELD) tidak jadi dilanjutkan. */
+    private function cancel(Device $device, ?string $notes)
+    {
+        $msg = $notes ?: 'Kereta tidak terdeteksi lagi, penutupan dibatalkan';
+
+        if ($pending = $this->openPending($device)) {
+            $pending->update(['gate_action' => 'CANCELLED', 'notes' => $msg, 'guard_response' => null, 'response_time_ms' => null]);
+            return response()->json(['ok' => true, 'id' => $pending->id, 'event_id' => $pending->event_id]);
+        }
+
+        $last = GateLog::where('device_id', $device->id)->orderByDesc('updated_at')->orderByDesc('id')->first();
+        if ($last && $last->gate_action === 'HELD') {
+            // baris HELD tetap sebagai catatan kejadian; baris baru menandai penahanan berakhir
+            $log = GateLog::create([
+                'event_id' => sprintf('GL-%s-%04d', now()->format('ymd-His'), random_int(0, 9999)),
+                'crossing_id' => $device->crossing_id, 'device_id' => $device->id,
+                'trigger_type' => 'AUTOMATIC', 'gate_action' => 'CANCELLED',
+                'notes' => $msg, 'obstacle_detected' => false, 'logged_at' => now(),
+            ]);
+            return response()->json(['ok' => true, 'id' => $log->id, 'event_id' => $log->event_id], 201);
+        }
+
+        return response()->json(['ok' => true, 'ignored' => true]);   // tidak ada yang perlu dibatalkan
     }
 
     /**
@@ -202,23 +233,22 @@ class TelemetryController extends Controller
             'last_seen_at' => now(),
         ]);
 
-        // simpan baris log_sensor hanya jika state/health berubah, agar tabel tidak membengkak
+        // log_sensor = riwayat perubahan state/health. Jika tidak berubah, baris terakhir diperbarui
+        // (detail dan waktu laporan) sehingga tabel tidak membengkak tetapi dashboard tetap segar.
         foreach ($sensors as $s) {
             $last = LogSensor::where('device_id', $device->id)->where('sensor_type', $s['type'])
                 ->orderByDesc('reported_at')->orderByDesc('id')->first();
-            $detail = $s['detail'] ?? null;
-            if (! $last || $last->operational_state !== $s['state'] || $last->health_status !== $s['health']) {
+            if ($last && $last->operational_state === $s['state'] && $last->health_status === $s['health']) {
+                $last->update(['detail' => $s['detail'] ?? $last->detail, 'reported_at' => now()]);
+            } else {
                 LogSensor::create([
                     'device_id' => $device->id,
                     'sensor_type' => $s['type'],
                     'operational_state' => $s['state'],
                     'health_status' => $s['health'],
-                    'detail' => $detail,
+                    'detail' => $s['detail'] ?? null,
                     'reported_at' => now(),
                 ]);
-            } elseif ($last->detail !== $detail) {
-                // Perbarui telemetri sensor terakhir tanpa membuat baris baru setiap heartbeat.
-                $last->update(['detail' => $detail, 'reported_at' => now()]);
             }
         }
 

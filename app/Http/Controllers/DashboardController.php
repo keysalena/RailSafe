@@ -14,6 +14,9 @@ class DashboardController extends Controller
     /** Peringatan rel terhalang tetap tampil sampai ada log baru atau selama ini (detik). */
     private const OBSTACLE_ALERT_SECONDS = 300;
 
+    /** Palang dianggap masih tertutup sampai ada log OPENED, tetapi tidak lebih lama dari ini (jaga-jaga paket hilang). */
+    private const CLOSED_MAX_SECONDS = 900;
+
     public function index(Request $request)
     {
         $crossings = Crossing::whereIn('id', $request->user()->accessibleCrossingIds())->orderBy('code')->get();
@@ -62,7 +65,7 @@ class DashboardController extends Controller
         $countdown = (int) Setting::get('countdown_seconds');
         $nowTs = now()->timestamp;
         $pending = GateLog::whereIn('crossing_id', $ids)->where('gate_action', 'PENDING')
-            ->where('logged_at', '>=', now()->subSeconds($countdown + 25))->orderByDesc('logged_at')->first();
+            ->where('logged_at', '>=', now()->subSeconds($countdown + 8))->orderByDesc('logged_at')->first();
         $last = GateLog::whereIn('crossing_id', $ids)->orderByDesc('updated_at')->orderByDesc('id')->first();
         $lastConf = GateLog::whereIn('crossing_id', $ids)->where('trigger_type', 'AUTOMATIC')
             ->whereNotNull('confidence_score')->orderByDesc('logged_at')->value('confidence_score');
@@ -80,16 +83,16 @@ class DashboardController extends Controller
             $alert = ['type' => 'OBSTACLE', 'id' => $last->id, 'age' => $nowTs - $last->updated_at->timestamp, 'confidence' => $last->confidence_score];
             $gate = ['state' => 'HELD'] + $gate;
         } elseif ($last && $last->gate_action === 'CLOSED') {
-            if ($last->trigger_type === 'MANUAL') {
-                $gate = ['state' => 'CLOSED', 'mode' => 'MANUAL'] + $gate;
-            } else {
-                $left = $reopen - ($nowTs - $last->updated_at->timestamp);
-                if ($left > 0) $gate = ['state' => 'CLOSED', 'mode' => 'AUTO', 'remaining' => $left] + $gate;
+            // Palang terbuka lagi hanya setelah firmware mengirim log OPENED (Node 1 memastikan kereta sudah lewat).
+            if ($nowTs - $last->updated_at->timestamp <= self::CLOSED_MAX_SECONDS) {
+                $gate = ['state' => 'CLOSED', 'mode' => $last->trigger_type === 'MANUAL' ? 'MANUAL' : 'AUTO'] + $gate;
             }
             if ($nowTs - $last->updated_at->timestamp <= 6) {   // pemberitahuan hasil, tampil sebentar
                 $alert = ['type' => 'RESULT', 'id' => $last->id, 'mode' => $last->trigger_type === 'AUTOMATIC' ? 'AUTO' : 'MANUAL',
                     'guard' => $last->guard_response, 'response_ms' => $last->response_time_ms, 'total' => $countdown];
             }
+        } elseif ($last && $last->gate_action === 'CANCELLED' && $nowTs - $last->updated_at->timestamp <= 6) {
+            $alert = ['type' => 'CANCELLED', 'id' => $last->id];
         }
 
         // --- perangkat dan sensor ---
@@ -131,8 +134,9 @@ class DashboardController extends Controller
                 'code' => $d->device_code, 'name' => $d->name, 'type' => $d->type, 'status' => $d->status,
                 'seen_s' => $d->last_seen_at ? now()->timestamp - $d->last_seen_at->timestamp : null,
                 'battery' => $d->battery_level, 'crossing' => $d->crossing->code,
-                'ml_label' => $d->ml_label, 'ml_confidence' => $d->ml_confidence,
-                'distance_cm' => $d->distance_cm, 'rssi' => $d->rssi,
+                'ml_label' => $d->status === 'ACTIVE' ? $d->ml_label : null,
+                'ml_confidence' => $d->status === 'ACTIVE' && $d->ml_confidence !== null ? (float) $d->ml_confidence : null,
+                'distance_cm' => $d->distance_cm !== null ? (float) $d->distance_cm : null,
             ]),
             'sensors' => $sensors, 'recent' => $recent,
         ]);

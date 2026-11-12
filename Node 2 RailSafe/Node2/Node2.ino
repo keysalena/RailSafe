@@ -208,6 +208,7 @@ void bacaLoRa() {
 
     // Batalkan penutupan yang masih tertunda saat Node 1 yakin kereta sudah tidak terdeteksi.
     if (keadaan == HITUNG_MUNDUR || keadaan == TERHALANG) {
+      bool sedangTerhalang = (keadaan == TERHALANG);
       keadaan = SIAGA;
       countdownStart = 0;
       lastShownSec = -1;
@@ -215,6 +216,12 @@ void bacaLoRa() {
       digitalWrite(BUZZER_PIN, LOW);
       tampilkanStatusLCD("RailSafe READY", "STATUS: AMAN");
       Serial.println("STATUS_CLEAR diterima; penutupan tertunda dibatalkan.");
+
+      // Beri tahu dashboard agar hitung mundur / peringatan rel terhalang ikut berhenti.
+      kirimGateLog("AUTOMATIC", 0,
+                   sedangTerhalang ? "Kereta tidak terdeteksi lagi, penahanan palang dibatalkan"
+                                   : "Getaran kereta berhenti sebelum waktu habis, penutupan dibatalkan",
+                   "CANCELLED", -1);
     }
   }
 }

@@ -13,6 +13,7 @@ class SimulateRailsafe extends Command
         {--train : Kereta terdeteksi, petugas tidak merespons, palang menutup otomatis setelah hitung mundur}
         {--respond : Kereta terdeteksi, petugas menutup palang dengan tombol (6 detik)}
         {--obstacle : Kereta terdeteksi, petugas tidak merespons, rel terhalang (palang ditahan)}
+        {--cancel : Kereta terdeteksi lalu getaran berhenti sebelum waktu habis (dibatalkan)}
         {--manual : Petugas menutup lalu membuka palang tanpa kereta}';
     protected $description = 'Simulasi heartbeat dan alur hitung mundur untuk demo tanpa perangkat keras';
 
@@ -36,10 +37,17 @@ class SimulateRailsafe extends Command
         ]);
         $countdown = (int) Setting::get('countdown_seconds');
 
-        if ($this->option('train') || $this->option('respond') || $this->option('obstacle')) {
+        if ($this->option('train') || $this->option('respond') || $this->option('obstacle') || $this->option('cancel')) {
             $log = $row(['trigger_type' => 'AUTOMATIC', 'gate_action' => 'PENDING', 'confidence_score' => 93.4,
                 'notes' => 'Getaran kereta terdeteksi, menunggu petugas (simulasi)']);
             $this->info("Kereta terdeteksi. Lihat kotak peringatan di dashboard ($countdown detik).");
+
+            if ($this->option('cancel')) {
+                $wait(6);
+                $log->update(['gate_action' => 'CANCELLED', 'notes' => 'Getaran kereta berhenti sebelum waktu habis, penutupan dibatalkan (simulasi)']);
+                $this->info('Dibatalkan: palang tidak ditutup.');
+                return self::SUCCESS;
+            }
 
             if ($this->option('respond')) {
                 $wait(6);
