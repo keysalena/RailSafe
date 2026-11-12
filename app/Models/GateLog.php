@@ -24,6 +24,7 @@ class GateLog extends Model
             'PENDING' => $this->isStalePending() ? 'Tanpa hasil' : 'Menunggu petugas',
             'OPENED' => $auto ? 'Dibuka otomatis' : 'Dibuka petugas',
             'HELD' => 'Ditahan (rintangan)',
+            'CANCELLED' => 'Dibatalkan (kereta tidak terdeteksi)',
             default => $auto ? 'Ditutup otomatis' : 'Ditutup petugas',
         };
     }
@@ -33,7 +34,7 @@ class GateLog extends Model
     {
         return match ($this->gate_action) {
             'PENDING' => $this->isStalePending() ? 't-mute' : 't-warn',
-            'OPENED' => 't-mute',
+            'OPENED', 'CANCELLED' => 't-mute',
             'HELD' => 't-bad',
             default => $this->trigger_type === 'AUTOMATIC' ? 't-warn' : 't-ok',
         };

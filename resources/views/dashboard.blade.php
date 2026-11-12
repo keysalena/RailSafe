@@ -249,7 +249,7 @@ function drawGate(g,l){
  const L={OPEN:['Palang terbuka','var(--green)','Tidak ada penutupan aktif'],
  PENDING:['Menunggu petugas','#d98a06','Kereta terdeteksi, sisa '+g.remaining+' dtk untuk menutup palang'],
  HELD:['Rel terhalang','var(--red)','Palang ditahan terbuka sampai rel kosong'],
- CLOSED:['Palang tertutup','var(--red)',g.mode==='AUTO'?'Ditutup otomatis, diperkirakan terbuka lagi dalam '+g.remaining+' dtk':'Ditutup manual oleh petugas']}[st];
+ CLOSED:['Palang tertutup','var(--red)',g.mode==='AUTO'?'Ditutup otomatis, menunggu Node 1 memastikan kereta sudah lewat':'Ditutup manual oleh petugas']}[st];
  $('ll').textContent=L[0];$('ll').style.color=L[1];$('lsub').textContent=L[2];
  $('lb').style.width=(g.last_confidence||0)+'%';
  $('lrs').textContent=l.rssi!=null?l.rssi+' dBm':'-';$('lds').textContent=l.distance_cm!=null?Math.round(l.distance_cm)+' cm':'-';$('lbat').textContent=l.battery!=null?l.battery+'%':'-'}
@@ -287,7 +287,8 @@ function drawAlert(a){
   ring.style.display='none';$('am-meta').textContent='Terdeteksi '+a.age+' detik lalu. Peringatan hilang otomatis setelah rel kosong dan palang menutup.';beep();
  }else{
   card.className='am-card info';$('am-ic').innerHTML=ICON.ok;ring.style.display='none';
-  if(a.mode==='MANUAL'){$('am-title').textContent='Palang ditutup petugas';$('am-text').textContent=a.response_ms!=null?'Petugas menutup palang dalam '+(a.response_ms/1000).toFixed(1)+' detik.':'Palang ditutup dengan tombol di pos.'}
+  if(a.type==='CANCELLED'){$('am-title').textContent='Peringatan dibatalkan';$('am-text').textContent='Getaran kereta berhenti sebelum waktu habis, jadi palang tidak ditutup.'}
+  else if(a.mode==='MANUAL'){$('am-title').textContent='Palang ditutup petugas';$('am-text').textContent=a.response_ms!=null?'Petugas menutup palang dalam '+(a.response_ms/1000).toFixed(1)+' detik.':'Palang ditutup dengan tombol di pos.'}
   else{$('am-title').textContent='Palang ditutup otomatis';$('am-text').textContent=a.guard==='NO_RESPONSE'?'Petugas tidak merespons dalam '+a.total+' detik, sistem menutup palang.':'Kereta terdeteksi, palang ditutup otomatis.'}
   $('am-meta').textContent='';
  }
