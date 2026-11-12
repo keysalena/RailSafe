@@ -282,7 +282,7 @@ function drawAlert(a){
   ring.style.display='';$('am-num').textContent=a.remaining;$('am-arc').style.strokeDashoffset=(339.3*(1-Math.max(0,a.remaining)/Math.max(1,a.total))).toFixed(1);
   $('am-meta').textContent=a.confidence!=null?'Keyakinan TinyML '+a.confidence+'%':'';beep();
  }else if(a.type==='OBSTACLE'){
-  card.className='am-card bad';$('am-ic').innerHTML=ICON.block;$('am-title').textContent='Rel terhalang!';
+  card.className='am-card bad';$('am-ic').innerHTML=ICON.block;$('am-title').textContent='Palang terhalang!';
   $('am-text').textContent='Ada kendaraan atau benda di area rel. Palang ditahan terbuka dan sirine darurat menyala. Segera kosongkan rel.';
   ring.style.display='none';$('am-meta').textContent='Terdeteksi '+a.age+' detik lalu. Peringatan hilang otomatis setelah rel kosong dan palang menutup.';beep();
  }else{
