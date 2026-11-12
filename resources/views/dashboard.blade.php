@@ -40,7 +40,19 @@
   </div>
 </div>
 
-<div class="abn" id="abn" role="alert"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.01"/></svg><div><div id="abm">Palang ditutup</div><small id="abt"></small></div><big id="abc"></big></div>
+<div class="am" id="am" role="alertdialog" aria-modal="true" aria-labelledby="am-title" aria-describedby="am-text">
+  <div class="am-card warn" id="am-card">
+    <div class="am-ic" id="am-ic"></div>
+    <h2 id="am-title"></h2>
+    <p id="am-text"></p>
+    <div class="am-ring" id="am-ring">
+      <svg viewBox="0 0 120 120"><circle cx="60" cy="60" r="54" class="bg"/><circle cx="60" cy="60" r="54" class="fg" id="am-arc"/></svg>
+      <div><b id="am-num">0</b><span>detik</span></div>
+    </div>
+    <div class="am-meta" id="am-meta"></div>
+    <button class="btn ghost" id="am-close" type="button">Sembunyikan</button>
+  </div>
+</div>
 
 <section class="kpis" aria-label="Ringkasan hari ini">
   <div class="kpi"><b id="k1">0</b><span>Penutupan palang hari ini</span></div>
@@ -174,6 +186,30 @@
   .tb-pop{width:min(272px,calc(100vw - 48px))}
 }
 @media (prefers-reduced-motion:reduce){.tb .live-clock,.tb-alarm{transition:none}}
+
+/* ===== peringatan di tengah layar ===== */
+.am{display:none;position:fixed;inset:0;z-index:100;align-items:center;justify-content:center;padding:20px;background:rgba(8,18,50,.58);-webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+.am.on{display:flex}
+.am-card{width:min(440px,100%);background:var(--card);color:var(--ink);border-radius:24px;padding:28px 24px 22px;text-align:center;box-shadow:0 24px 60px rgba(0,0,0,.35);border-top:7px solid var(--yellow)}
+.am-card.bad{border-top-color:var(--red)}
+.am-card.info{border-top-color:var(--blue)}
+.am-ic{width:64px;height:64px;border-radius:50%;margin:0 auto 12px;display:grid;place-items:center;background:var(--yellow);color:#1a2342}
+.am-card.bad .am-ic{background:var(--red);color:#fff;animation:amp 1s infinite}
+.am-card.info .am-ic{background:var(--blue);color:#fff}
+.am-ic svg{width:32px;height:32px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+@keyframes amp{50%{transform:scale(1.08)}}
+.am-card h2{font-size:22px;font-weight:700;margin-bottom:6px}
+.am-card p{color:var(--muted);font-size:13.5px;line-height:1.55;margin:0 auto 14px;max-width:340px}
+.am-ring{position:relative;width:150px;height:150px;margin:0 auto 12px}
+.am-ring svg{width:100%;height:100%;transform:rotate(-90deg)}
+.am-ring circle{fill:none;stroke-width:9}
+.am-ring .bg{stroke:var(--line)}
+.am-ring .fg{stroke:var(--yellow);stroke-linecap:round;stroke-dasharray:339.3;stroke-dashoffset:0;transition:stroke-dashoffset .9s linear}
+.am-ring div{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.1}
+.am-ring b{font-size:46px;font-weight:700;font-variant-numeric:tabular-nums}
+.am-ring span{font-size:12px;color:var(--muted)}
+.am-meta{font-size:12.5px;color:var(--muted);margin-bottom:14px;min-height:18px}
+@media (prefers-reduced-motion:reduce){.am-card.bad .am-ic{animation:none}.am-ring .fg{transition:none}}
 </style>
 <script>
 const SUMMARY_URL=@json(route('dashboard.summary', array_filter(['crossing' => $selected])));
@@ -209,15 +245,47 @@ function drawBars(w){const mx=Math.max(4,...w.map(d=>d.auto+d.manual));
  $('xl').innerHTML=w.map(d=>`<span>${esc(d.label)}</span>`).join('')}
 
 function drawGate(g,l){
- const closed=g.state==='CLOSED';
- $('ll').textContent=closed?'Palang tertutup':'Palang terbuka';$('ll').style.color=closed?'var(--red)':'var(--green)';
- $('lsub').textContent=closed?(g.mode==='AUTO'?'Ditutup otomatis, diperkirakan terbuka lagi dalam '+g.remaining+' dtk':'Ditutup manual oleh petugas'):'Tidak ada penutupan aktif';
+ const st=g.state,closed=st==='CLOSED';
+ const L={OPEN:['Palang terbuka','var(--green)','Tidak ada penutupan aktif'],
+  PENDING:['Menunggu petugas','#d98a06','Kereta terdeteksi, sisa '+g.remaining+' dtk untuk menutup palang'],
+  HELD:['Rel terhalang','var(--red)','Palang ditahan terbuka sampai rel kosong'],
+  CLOSED:['Palang tertutup','var(--red)',g.mode==='AUTO'?'Ditutup otomatis, diperkirakan terbuka lagi dalam '+g.remaining+' dtk':'Ditutup manual oleh petugas']}[st];
+ $('ll').textContent=L[0];$('ll').style.color=L[1];$('lsub').textContent=L[2];
  $('lb').style.width=(g.last_confidence||0)+'%';
- $('lrs').textContent=l.rssi!=null?l.rssi+' dBm':'-';$('lds').textContent=l.distance_cm!=null?Math.round(l.distance_cm)+' cm':'-';$('lbat').textContent=l.battery!=null?l.battery+'%':'-';
- const a=$('abn');a.classList.toggle('on',closed);a.classList.toggle('man',closed&&g.mode==='MANUAL');
- if(closed){$('abm').textContent=g.mode==='AUTO'?'Kereta terdeteksi, palang ditutup otomatis':'Palang ditutup manual oleh petugas';
-  $('abt').textContent=g.mode==='AUTO'&&g.last_confidence!=null?'Keyakinan TinyML '+g.last_confidence+'%':'';
-  $('abc').textContent=g.mode==='AUTO'?g.remaining+' dtk':'';if(g.mode==='AUTO')beep()}}
+ $('lrs').textContent=l.rssi!=null?l.rssi+' dBm':'-';$('lds').textContent=l.distance_cm!=null?Math.round(l.distance_cm)+' cm':'-';$('lbat').textContent=l.battery!=null?l.battery+'%':'-'}
+
+/* ===== peringatan di tengah layar ===== */
+const ICON={train:'<svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="14" rx="3"/><path d="M6 11h12M9 21l2-4M15 21l-2-4"/><circle cx="9.5" cy="14" r=".6"/><circle cx="14.5" cy="14" r=".6"/></svg>',
+ block:'<svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.01"/></svg>',
+ ok:'<svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>'};
+const dismissed=new Set();let curKey=null;
+$('am-close').onclick=()=>{if(curKey)dismissed.add(curKey);$('am').classList.remove('on')};
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('am').classList.contains('on'))$('am-close').click()});
+
+function drawAlert(a){
+ const m=$('am');
+ if(!a){m.classList.remove('on');curKey=null;return}
+ const key=a.type+a.id;
+ if(dismissed.has(key)){m.classList.remove('on');return}
+ const card=$('am-card'),ring=$('am-ring');
+ if(a.type==='COUNTDOWN'){
+  card.className='am-card warn';$('am-ic').innerHTML=ICON.train;$('am-title').textContent='Kereta terdeteksi!';
+  $('am-text').textContent=a.remaining>0?'Tutup palang sekarang dengan tombol di pos. Jika tidak ada respons, palang menutup otomatis saat waktu habis.':'Waktu habis. Sistem menutup palang otomatis.';
+  ring.style.display='';$('am-num').textContent=a.remaining;$('am-arc').style.strokeDashoffset=(339.3*(1-Math.max(0,a.remaining)/Math.max(1,a.total))).toFixed(1);
+  $('am-meta').textContent=a.confidence!=null?'Keyakinan TinyML '+a.confidence+'%':'';beep();
+ }else if(a.type==='OBSTACLE'){
+  card.className='am-card bad';$('am-ic').innerHTML=ICON.block;$('am-title').textContent='Rel terhalang!';
+  $('am-text').textContent='Ada kendaraan atau benda di area rel. Palang ditahan terbuka dan sirine darurat menyala. Segera kosongkan rel.';
+  ring.style.display='none';$('am-meta').textContent='Terdeteksi '+a.age+' detik lalu. Peringatan hilang otomatis setelah rel kosong dan palang menutup.';beep();
+ }else{
+  card.className='am-card info';$('am-ic').innerHTML=ICON.ok;ring.style.display='none';
+  if(a.mode==='MANUAL'){$('am-title').textContent='Palang ditutup petugas';$('am-text').textContent=a.response_ms!=null?'Petugas menutup palang dalam '+(a.response_ms/1000).toFixed(1)+' detik.':'Palang ditutup dengan tombol di pos.'}
+  else{$('am-title').textContent='Palang ditutup otomatis';$('am-text').textContent=a.guard==='NO_RESPONSE'?'Petugas tidak merespons dalam '+a.total+' detik, sistem menutup palang.':'Kereta terdeteksi, palang ditutup otomatis.'}
+  $('am-meta').textContent='';
+ }
+ m.classList.add('on');
+ if(curKey!==key){curKey=key;$('am-close').focus()}
+}
 
 function drawDevs(a){$('devs').innerHTML=a.length?a.map(d=>{const s=DS[d.status];return `<div class="item"><div class="ic ${d.type==='GATE_CONTROLLER'?'y':''}"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M8 18v2M16 18v2"/></svg></div><div><b>${esc(d.name||d.code)}</b><small>${esc(d.code)} · ${esc(d.crossing)}${d.battery!=null?' · baterai '+d.battery+'%':''}</small></div><div class="r"><span class="tag ${s[1]}">${s[0]}</span>${d.seen_s!=null?`<small>lapor ${d.seen_s} dtk lalu</small>`:''}</div></div>`}).join(''):'<p class="muted">Belum ada perangkat.</p>'}
 
@@ -228,12 +296,12 @@ function drawRows(a){$('rows').innerHTML=a.length?a.map(e=>`<tr onclick="locatio
 
 function render(d){
  $('k1').textContent=d.kpi.total;$('k2').textContent=d.kpi.auto;$('k3').textContent=d.kpi.manual;$('k4').textContent=d.kpi.avg_conf!=null?d.kpi.avg_conf+'%':'-';
- drawDonut(d.kpi.manual,d.kpi.auto);drawArea(d.hourly,d.now_hour);drawBars(d.weekly);drawGate(d.gate,d.live);drawDevs(d.devices);drawSens(d.sensors);drawRows(d.recent)}
+ drawDonut(d.kpi.manual,d.kpi.auto);drawArea(d.hourly,d.now_hour);drawBars(d.weekly);drawGate(d.gate,d.live);drawAlert(d.alert);drawDevs(d.devices);drawSens(d.sensors);drawRows(d.recent)}
 
 async function load(){let next=3000;
  try{const r=await fetch(SUMMARY_URL,{headers:{'Accept':'application/json'},credentials:'same-origin'});
   if(r.status===401||r.status===419){location.href='{{ route('login') }}';return}
-  const d=await r.json();render(d);if(d.gate.state==='CLOSED')next=1000}catch(e){next=5000}
+  const d=await r.json();render(d);if(d.alert||d.gate.state!=='OPEN')next=1000}catch(e){next=5000}
  setTimeout(load,next)}
 
 /* jam dan tanggal selalu dalam WIB, apa pun zona waktu perangkat */

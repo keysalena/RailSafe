@@ -11,6 +11,9 @@ use Illuminate\Http\Request;
 
 class DashboardController extends Controller
 {
+    /** Peringatan rel terhalang tetap tampil sampai ada log baru atau selama ini (detik). */
+    private const OBSTACLE_ALERT_SECONDS = 300;
+
     public function index(Request $request)
     {
         $crossings = Crossing::whereIn('id', $request->user()->accessibleCrossingIds())->orderBy('code')->get();
@@ -55,18 +58,37 @@ class DashboardController extends Controller
             ];
         }
 
-        // --- status palang (perkiraan dari log terakhir; firmware belum mengirim log saat palang terbuka otomatis) ---
-        $last = GateLog::whereIn('crossing_id', $ids)->orderByDesc('logged_at')->orderByDesc('id')->first();
-        $lastAuto = GateLog::whereIn('crossing_id', $ids)->where('trigger_type', 'AUTOMATIC')->where('gate_action', 'CLOSED')
-            ->orderByDesc('logged_at')->first();
-        $gate = ['state' => 'OPEN', 'mode' => null, 'remaining' => null, 'last_confidence' => $lastAuto?->confidence_score];
-        if ($last && $last->gate_action === 'CLOSED') {
+        // --- peringatan di tengah layar + status palang ---
+        $countdown = (int) Setting::get('countdown_seconds');
+        $nowTs = now()->timestamp;
+        $pending = GateLog::whereIn('crossing_id', $ids)->where('gate_action', 'PENDING')
+            ->where('logged_at', '>=', now()->subSeconds($countdown + 25))->orderByDesc('logged_at')->first();
+        $last = GateLog::whereIn('crossing_id', $ids)->orderByDesc('updated_at')->orderByDesc('id')->first();
+        $lastConf = GateLog::whereIn('crossing_id', $ids)->where('trigger_type', 'AUTOMATIC')
+            ->whereNotNull('confidence_score')->orderByDesc('logged_at')->value('confidence_score');
+
+        $alert = null;
+        $gate = ['state' => 'OPEN', 'mode' => null, 'remaining' => null, 'last_confidence' => $lastConf];
+
+        if ($pending) {
+            // kereta terdeteksi, petugas diberi waktu menutup palang
+            $left = max(0, $countdown - ($nowTs - $pending->logged_at->timestamp));
+            $alert = ['type' => 'COUNTDOWN', 'id' => $pending->id, 'remaining' => $left, 'total' => $countdown, 'confidence' => $pending->confidence_score];
+            $gate = ['state' => 'PENDING', 'remaining' => $left] + $gate;
+        } elseif ($last && $last->gate_action === 'HELD' && $nowTs - $last->updated_at->timestamp <= self::OBSTACLE_ALERT_SECONDS) {
+            // rel terhalang kendaraan/benda: palang ditahan terbuka
+            $alert = ['type' => 'OBSTACLE', 'id' => $last->id, 'age' => $nowTs - $last->updated_at->timestamp, 'confidence' => $last->confidence_score];
+            $gate = ['state' => 'HELD'] + $gate;
+        } elseif ($last && $last->gate_action === 'CLOSED') {
             if ($last->trigger_type === 'MANUAL') {
-                $gate['state'] = 'CLOSED';
-                $gate['mode'] = 'MANUAL';
+                $gate = ['state' => 'CLOSED', 'mode' => 'MANUAL'] + $gate;
             } else {
-                $left = $reopen - (now()->timestamp - $last->logged_at->timestamp);
+                $left = $reopen - ($nowTs - $last->updated_at->timestamp);
                 if ($left > 0) $gate = ['state' => 'CLOSED', 'mode' => 'AUTO', 'remaining' => $left] + $gate;
+            }
+            if ($nowTs - $last->updated_at->timestamp <= 6) {   // pemberitahuan hasil, tampil sebentar
+                $alert = ['type' => 'RESULT', 'id' => $last->id, 'mode' => $last->trigger_type === 'AUTOMATIC' ? 'AUTO' : 'MANUAL',
+                    'guard' => $last->guard_response, 'response_ms' => $last->response_time_ms, 'total' => $countdown];
             }
         }
 
@@ -104,7 +126,7 @@ class DashboardController extends Controller
             ],
             'hourly' => ['today' => $todayHours, 'avg' => array_map(fn ($v) => round($v, 2), $avg)],
             'weekly' => $weekly,
-            'gate' => $gate, 'live' => $live,
+            'gate' => $gate, 'alert' => $alert, 'live' => $live,
             'devices' => $devices->map(fn ($d) => [
                 'code' => $d->device_code, 'name' => $d->name, 'type' => $d->type, 'status' => $d->status,
                 'seen_s' => $d->last_seen_at ? now()->timestamp - $d->last_seen_at->timestamp : null,

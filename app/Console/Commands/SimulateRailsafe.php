@@ -9,8 +9,12 @@ use Illuminate\Console\Command;
 
 class SimulateRailsafe extends Command
 {
-    protected $signature = 'railsafe:simulate {--train : Kereta terdeteksi, palang ditutup otomatis} {--manual : Petugas menutup palang dengan tombol, lalu membukanya}';
-    protected $description = 'Simulasi heartbeat dan log palang untuk demo tanpa perangkat keras';
+    protected $signature = 'railsafe:simulate
+        {--train : Kereta terdeteksi, petugas tidak merespons, palang menutup otomatis setelah hitung mundur}
+        {--respond : Kereta terdeteksi, petugas menutup palang dengan tombol (6 detik)}
+        {--obstacle : Kereta terdeteksi, petugas tidak merespons, rel terhalang (palang ditahan)}
+        {--manual : Petugas menutup lalu membuka palang tanpa kereta}';
+    protected $description = 'Simulasi heartbeat dan alur hitung mundur untuk demo tanpa perangkat keras';
 
     public function handle(): int
     {
@@ -25,25 +29,49 @@ class SimulateRailsafe extends Command
             $n1->update(['battery_level' => 82, 'connection_status' => 'ACTIVE', 'last_seen_at' => now()]);
             $n2->update(['distance_cm' => round(rand(1200, 1800) / 10, 1), 'rssi' => -68, 'connection_status' => 'ACTIVE', 'last_seen_at' => now()]);
         };
-        $log = fn (string $trigger, string $action, ?float $conf, string $notes) => GateLog::create([
-            'event_id' => sprintf('GL-%s-%04d', now()->format('ymd-His'), random_int(0, 9999)),
-            'crossing_id' => $n2->crossing_id, 'device_id' => $n2->id, 'trigger_type' => $trigger,
-            'gate_action' => $action, 'confidence_score' => $conf, 'notes' => $notes, 'logged_at' => now(),
+        $wait = function (int $secs) use ($beat) { for ($i = 0; $i < $secs; $i++) { $beat(); sleep(1); } };
+        $eid = fn () => sprintf('GL-%s-%04d', now()->format('ymd-His'), random_int(0, 9999));
+        $row = fn (array $x) => GateLog::create($x + [
+            'event_id' => $eid(), 'crossing_id' => $n2->crossing_id, 'device_id' => $n2->id, 'logged_at' => now(),
         ]);
+        $countdown = (int) Setting::get('countdown_seconds');
 
-        if ($this->option('train')) {
-            $log('AUTOMATIC', 'CLOSED', 93.4, 'Kereta terdeteksi TinyML (simulasi)');
-            $secs = (int) Setting::get('gate_reopen_seconds');
-            $this->info("Palang ditutup otomatis. Banner di dashboard aktif selama $secs detik.");
-            for ($i = 0; $i < $secs; $i++) { $beat(); sleep(1); }
+        if ($this->option('train') || $this->option('respond') || $this->option('obstacle')) {
+            $log = $row(['trigger_type' => 'AUTOMATIC', 'gate_action' => 'PENDING', 'confidence_score' => 93.4,
+                'notes' => 'Getaran kereta terdeteksi, menunggu petugas (simulasi)']);
+            $this->info("Kereta terdeteksi. Lihat kotak peringatan di dashboard ($countdown detik).");
+
+            if ($this->option('respond')) {
+                $wait(6);
+                $log->update(['trigger_type' => 'MANUAL', 'gate_action' => 'CLOSED', 'guard_response' => 'CONFIRMED',
+                    'response_time_ms' => 6000, 'notes' => 'Ditutup petugas saat hitung mundur (simulasi)']);
+                $this->info('Petugas menutup palang.');
+                return self::SUCCESS;
+            }
+
+            $wait($countdown);
+            if ($this->option('obstacle')) {
+                $log->update(['trigger_type' => 'AUTOMATIC', 'gate_action' => 'HELD', 'guard_response' => 'NO_RESPONSE',
+                    'obstacle_detected' => true, 'notes' => 'Rel terhalang, palang ditahan terbuka (simulasi)']);
+                $this->info('Rel terhalang. Peringatan tampil 12 detik, lalu rintangan dianggap hilang.');
+                $wait(12);
+                $row(['trigger_type' => 'AUTOMATIC', 'gate_action' => 'CLOSED', 'confidence_score' => 93.4, 'obstacle_detected' => false,
+                    'notes' => 'Rintangan hilang, palang ditutup otomatis (simulasi)']);
+                return self::SUCCESS;
+            }
+            $log->update(['trigger_type' => 'AUTOMATIC', 'gate_action' => 'CLOSED', 'guard_response' => 'NO_RESPONSE',
+                'obstacle_detected' => false, 'notes' => 'Petugas tidak merespons, ditutup otomatis (simulasi)']);
+            $this->info('Palang ditutup otomatis.');
+            $wait((int) Setting::get('gate_reopen_seconds'));
+            $row(['trigger_type' => 'AUTOMATIC', 'gate_action' => 'OPENED', 'notes' => 'Dibuka otomatis setelah kereta lewat (simulasi)']);
             return self::SUCCESS;
         }
 
         if ($this->option('manual')) {
-            $log('MANUAL', 'CLOSED', null, 'Ditutup manual via Arcade Button (simulasi)');
+            $row(['trigger_type' => 'MANUAL', 'gate_action' => 'CLOSED', 'notes' => 'Ditutup manual via Arcade Button (simulasi)']);
             $this->info('Palang ditutup petugas. Dibuka lagi dalam 8 detik.');
-            for ($i = 0; $i < 8; $i++) { $beat(); sleep(1); }
-            $log('MANUAL', 'OPENED', null, 'Dibuka manual via Arcade Button (simulasi)');
+            $wait(8);
+            $row(['trigger_type' => 'MANUAL', 'gate_action' => 'OPENED', 'notes' => 'Dibuka manual via Arcade Button (simulasi)']);
             return self::SUCCESS;
         }
 

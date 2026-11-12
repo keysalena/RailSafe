@@ -35,9 +35,11 @@ Ganti kata sandi dan token demo sebelum dipakai di luar demo.
 ## Demo tanpa alat
 
 ```bash
-php artisan railsafe:simulate            # heartbeat terus-menerus (terminal kedua)
-php artisan railsafe:simulate --train    # palang ditutup otomatis (banner merah + hitung mundur)
-php artisan railsafe:simulate --manual   # petugas menutup lalu membuka palang
+php artisan railsafe:simulate --train       # hitung mundur, lalu palang menutup otomatis
+php artisan railsafe:simulate --respond     # petugas menutup palang dalam 6 detik
+php artisan railsafe:simulate --obstacle    # hitung mundur, lalu rel terhalang
+php artisan railsafe:simulate --manual      # petugas menutup lalu membuka palang
+php artisan railsafe:simulate               # tanpa opsi: heartbeat terus-menerus
 ```
 
 ## API

@@ -12,9 +12,59 @@ use Illuminate\Http\Request;
 
 class TelemetryController extends Controller
 {
+    /** Skala keyakinan: firmware mengirim 0-1 (AUTOMATIC) atau 1.0 sebagai pengisi (MANUAL). */
+    private function normalizeScore(string $trigger, $score): ?float
+    {
+        if ($score === null || $trigger === 'MANUAL') return null;
+        $score = (float) $score;
+        if ($score <= 0) return null;
+        return $score <= 1 ? $score * 100 : $score;
+    }
+
+    /** Baris PENDING milik perangkat yang masih dalam jendela hitung mundur. */
+    private function openPending(Device $device): ?GateLog
+    {
+        $window = (int) Setting::get('countdown_seconds') + 30;
+
+        return GateLog::where('device_id', $device->id)->where('gate_action', 'PENDING')
+            ->where('logged_at', '>=', now()->subSeconds($window))->orderByDesc('logged_at')->first();
+    }
+
     /**
-     * POST /api/gate-log : format yang dikirim firmware Node2.ino saat ini.
-     * Body: {"trigger_type":"AUTOMATIC|MANUAL","confidence_score":0.93,"notes":"..."}
+     * POST /api/alert : Node 2 menerima sinyal kereta dan memulai hitung mundur untuk petugas.
+     * Body: {"confidence_score":0.93,"notes":"..."}  (keduanya opsional)
+     */
+    public function alert(Request $request)
+    {
+        /** @var Device $device */
+        $device = $request->attributes->get('device');
+        $data = $request->validate(['confidence_score' => 'nullable|numeric|min:0|max:100', 'notes' => 'nullable|string|max:255']);
+
+        $device->update(['last_seen_at' => now(), 'connection_status' => 'ACTIVE']);
+
+        if ($existing = $this->openPending($device)) {   // alert berulang tidak membuat baris ganda
+            return response()->json(['ok' => true, 'id' => $existing->id, 'event_id' => $existing->event_id, 'duplicate' => true]);
+        }
+
+        $log = GateLog::create([
+            'event_id' => sprintf('GL-%s-%04d', now()->format('ymd-His'), random_int(0, 9999)),
+            'crossing_id' => $device->crossing_id,
+            'device_id' => $device->id,
+            'trigger_type' => 'AUTOMATIC',
+            'gate_action' => 'PENDING',
+            'confidence_score' => $this->normalizeScore('AUTOMATIC', $data['confidence_score'] ?? null),
+            'notes' => $data['notes'] ?? 'Getaran kereta terdeteksi, menunggu petugas',
+            'logged_at' => now(),
+        ]);
+
+        return response()->json(['ok' => true, 'id' => $log->id, 'event_id' => $log->event_id], 201);
+    }
+
+    /**
+     * POST /api/gate-log : hasil aksi palang.
+     * Body: trigger_type (AUTOMATIC|MANUAL), confidence_score, notes,
+     *       gate_action (CLOSED|OPENED|HELD, opsional), obstacle_detected (opsional).
+     * Jika ada alert PENDING yang masih berjalan, baris itu diselesaikan (bukan dibuat baru).
      */
     public function gateLog(Request $request)
     {
@@ -26,31 +76,44 @@ class TelemetryController extends Controller
             'confidence_score' => 'nullable|numeric|min:0|max:100',
             'notes' => 'nullable|string|max:255',
             'gate_action' => 'nullable|in:CLOSED,OPENED,HELD',
+            'obstacle_detected' => 'nullable|boolean',
         ]);
 
+        $trigger = $data['trigger_type'];
         $notes = $data['notes'] ?? null;
-        // firmware hanya mengirim satu jenis log untuk tutup dan buka; bedanya ada di teks notes
         $action = $data['gate_action'] ?? ($notes && preg_match('/dibuka/i', $notes) ? 'OPENED' : 'CLOSED');
-
-        $score = $data['confidence_score'] ?? null;
-        if ($data['trigger_type'] === 'MANUAL') {
-            $score = null;                       // firmware mengirim 1.0 sebagai nilai pengisi untuk tombol manual
-        } elseif ($score !== null && $score <= 1) {
-            $score = $score * 100;               // firmware mengirim skala 0-1
-        }
-
-        $log = GateLog::create([
-            'event_id' => sprintf('GL-%s-%04d', now()->format('ymd-His'), random_int(0, 9999)),
-            'crossing_id' => $device->crossing_id,
-            'device_id' => $device->id,
-            'trigger_type' => $data['trigger_type'],
-            'gate_action' => $action,
-            'confidence_score' => $score,
-            'notes' => $notes,
-            'logged_at' => now(),   // ESP32 tidak punya jam; pakai waktu server
-        ]);
+        $score = $this->normalizeScore($trigger, $data['confidence_score'] ?? null);
+        $obstacle = array_key_exists('obstacle_detected', $data) ? (bool) $data['obstacle_detected'] : null;
 
         $device->update(['last_seen_at' => now(), 'connection_status' => 'ACTIVE']);
+
+        $pending = in_array($action, ['CLOSED', 'HELD'], true) ? $this->openPending($device) : null;
+
+        if ($pending) {
+            $manual = $trigger === 'MANUAL';
+            $pending->update([
+                'trigger_type' => $trigger,
+                'gate_action' => $action,
+                'confidence_score' => $pending->confidence_score ?? $score,
+                'notes' => $notes ?? $pending->notes,
+                'guard_response' => $manual ? 'CONFIRMED' : 'NO_RESPONSE',
+                'response_time_ms' => $manual ? max(0, (now()->timestamp - $pending->logged_at->timestamp) * 1000) : null,
+                'obstacle_detected' => $obstacle ?? ($manual ? null : false),
+            ]);
+            $log = $pending;
+        } else {
+            $log = GateLog::create([
+                'event_id' => sprintf('GL-%s-%04d', now()->format('ymd-His'), random_int(0, 9999)),
+                'crossing_id' => $device->crossing_id,
+                'device_id' => $device->id,
+                'trigger_type' => $trigger,
+                'gate_action' => $action,
+                'confidence_score' => $score,
+                'notes' => $notes,
+                'obstacle_detected' => $obstacle,
+                'logged_at' => now(),   // ESP32 tidak punya jam; pakai waktu server
+            ]);
+        }
 
         return response()->json(['ok' => true, 'id' => $log->id, 'event_id' => $log->event_id], 201);
     }

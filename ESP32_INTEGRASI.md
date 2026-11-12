@@ -1,56 +1,138 @@
-# Sambungan ke firmware ESP32
+<?php
 
-## Yang sudah cocok tanpa mengubah Node2.ino
+namespace App\Http\Controllers;
 
-| Firmware | Laravel |
-|---|---|
-| `POST /api/gate-log` | endpoint `gateLog()`, tabel `gate_logs` |
-| `trigger_type` = `AUTOMATIC` / `MANUAL` | kolom pemicu (Otomatis / Manual) |
-| `confidence_score` 0 sampai 1 | disimpan sebagai persen (0,93 menjadi 93%). Untuk `MANUAL` nilainya (1.0) diabaikan |
-| `notes` | kolom catatan. Teks yang mengandung "Dibuka" dicatat sebagai aksi **dibuka**, selain itu **ditutup** |
-| tanpa header Authorization | diterima jika `RAILSAFE_REQUIRE_TOKEN=false` (dianggap NODE-02) |
-| tanpa jam | waktu log memakai waktu server saat data diterima |
+use App\Models\Crossing;
+use App\Models\Device;
+use App\Models\GateLog;
+use App\Models\LogSensor;
+use App\Models\Setting;
+use Illuminate\Http\Request;
 
-Jadi cukup isi `WIFI_SSID`, `WIFI_PASSWORD`, dan `LARAVEL_API` di Node2.ino.
+class DashboardController extends Controller
+{
+    /** Peringatan rel terhalang tetap tampil sampai ada log baru atau selama ini (detik). */
+    private const OBSTACLE_ALERT_SECONDS = 300;
 
-## Tambahan opsional di Node2.ino
+    public function index(Request $request)
+    {
+        $crossings = Crossing::whereIn('id', $request->user()->accessibleCrossingIds())->orderBy('code')->get();
 
-**1. Token (disarankan saat deployment, set `RAILSAFE_REQUIRE_TOKEN=true`)**: di `kirimLogKeLaravel()` tambahkan setelah `addHeader("Content-Type", ...)`:
+        return view('dashboard', ['crossings' => $crossings, 'selected' => (int) $request->query('crossing')]);
+    }
 
-```cpp
-http.addHeader("Authorization", "Bearer TOKEN_NODE_02");  // dibuat di menu Pos dan perangkat
-```
+    /** JSON untuk pembaruan berkala (AJAX) di dashboard. */
+    public function summary(Request $request)
+    {
+        $ids = $request->user()->scopedCrossingIds((int) $request->query('crossing'));
+        $reopen = (int) Setting::get('gate_reopen_seconds');
+        $today = now()->startOfDay();
 
-**2. Heartbeat** supaya status perangkat, RSSI, dan jarak HC-SR04 tampil di dashboard:
+        // --- penutupan hari ini ---
+        $closedToday = GateLog::whereIn('crossing_id', $ids)->where('gate_action', 'CLOSED')
+            ->where('logged_at', '>=', $today)->get();
+        $auto = $closedToday->where('trigger_type', 'AUTOMATIC');
+        $manual = $closedToday->where('trigger_type', 'MANUAL');
+        $confs = $auto->pluck('confidence_score')->filter(fn ($v) => $v !== null);
 
-```cpp
-const char* HEARTBEAT_API = "http://192.168.1.10:8000/api/heartbeat";
-unsigned long lastHeartbeat = 0;
+        // --- per jam: hari ini vs rata-rata 7 hari sebelumnya ---
+        $todayHours = array_fill(0, 24, 0);
+        foreach ($closedToday as $e) $todayHours[$e->logged_at->hour]++;
+        $avg = array_fill(0, 24, 0.0);
+        GateLog::whereIn('crossing_id', $ids)->where('gate_action', 'CLOSED')
+            ->whereBetween('logged_at', [$today->copy()->subDays(7), $today])->get(['logged_at'])
+            ->each(function ($e) use (&$avg) { $avg[$e->logged_at->hour] += 1 / 7; });
 
-void kirimHeartbeat() {
-  if (WiFi.status() != WL_CONNECTED) return;
-  HTTPClient http;
-  http.setTimeout(2000);
-  http.begin(HEARTBEAT_API);
-  http.addHeader("Content-Type", "application/json");
-  // http.addHeader("Authorization", "Bearer TOKEN_NODE_02");
-  String j = "{\"rssi\":" + String(LoRa.packetRssi()) +
-             ",\"distance_cm\":" + String(ukurJarakHCSR04()) + "}";
-  http.POST(j);
-  http.end();
+        // --- 7 hari terakhir ---
+        $week = GateLog::whereIn('crossing_id', $ids)->where('gate_action', 'CLOSED')
+            ->where('logged_at', '>=', $today->copy()->subDays(6))->get()
+            ->groupBy(fn ($e) => $e->logged_at->toDateString());
+        $weekly = [];
+        for ($i = 6; $i >= 0; $i--) {
+            $d = $today->copy()->subDays($i);
+            $rows = $week->get($d->toDateString(), collect());
+            $weekly[] = [
+                'label' => $d->locale('id')->isoFormat('ddd'),
+                'auto' => $rows->where('trigger_type', 'AUTOMATIC')->count(),
+                'manual' => $rows->where('trigger_type', 'MANUAL')->count(),
+            ];
+        }
+
+        // --- peringatan di tengah layar + status palang ---
+        $countdown = (int) Setting::get('countdown_seconds');
+        $nowTs = now()->timestamp;
+        $pending = GateLog::whereIn('crossing_id', $ids)->where('gate_action', 'PENDING')
+            ->where('logged_at', '>=', now()->subSeconds($countdown + 25))->orderByDesc('logged_at')->first();
+        $last = GateLog::whereIn('crossing_id', $ids)->orderByDesc('updated_at')->orderByDesc('id')->first();
+        $lastConf = GateLog::whereIn('crossing_id', $ids)->where('trigger_type', 'AUTOMATIC')
+            ->whereNotNull('confidence_score')->orderByDesc('logged_at')->value('confidence_score');
+
+        $alert = null;
+        $gate = ['state' => 'OPEN', 'mode' => null, 'remaining' => null, 'last_confidence' => $lastConf];
+
+        if ($pending) {
+            // kereta terdeteksi, petugas diberi waktu menutup palang
+            $left = max(0, $countdown - ($nowTs - $pending->logged_at->timestamp));
+            $alert = ['type' => 'COUNTDOWN', 'id' => $pending->id, 'remaining' => $left, 'total' => $countdown, 'confidence' => $pending->confidence_score];
+            $gate = ['state' => 'PENDING', 'remaining' => $left] + $gate;
+        } elseif ($last && $last->gate_action === 'HELD' && $nowTs - $last->updated_at->timestamp <= self::OBSTACLE_ALERT_SECONDS) {
+            // rel terhalang kendaraan/benda: palang ditahan terbuka
+            $alert = ['type' => 'OBSTACLE', 'id' => $last->id, 'age' => $nowTs - $last->updated_at->timestamp, 'confidence' => $last->confidence_score];
+            $gate = ['state' => 'HELD'] + $gate;
+        } elseif ($last && $last->gate_action === 'CLOSED') {
+            if ($last->trigger_type === 'MANUAL') {
+                $gate = ['state' => 'CLOSED', 'mode' => 'MANUAL'] + $gate;
+            } else {
+                $left = $reopen - ($nowTs - $last->updated_at->timestamp);
+                if ($left > 0) $gate = ['state' => 'CLOSED', 'mode' => 'AUTO', 'remaining' => $left] + $gate;
+            }
+            if ($nowTs - $last->updated_at->timestamp <= 6) {   // pemberitahuan hasil, tampil sebentar
+                $alert = ['type' => 'RESULT', 'id' => $last->id, 'mode' => $last->trigger_type === 'AUTOMATIC' ? 'AUTO' : 'MANUAL',
+                    'guard' => $last->guard_response, 'response_ms' => $last->response_time_ms, 'total' => $countdown];
+            }
+        }
+
+        // --- perangkat dan sensor ---
+        $devices = Device::with('crossing')->whereIn('crossing_id', $ids)->orderBy('device_code')->get();
+        $n1 = $devices->firstWhere('type', 'SENSOR_NODE');
+        $n2 = $devices->firstWhere('type', 'GATE_CONTROLLER');
+        $live = [
+            'rssi' => $n2?->rssi ?? $n1?->rssi,
+            'distance_cm' => $n2?->distance_cm !== null ? (float) $n2->distance_cm : null,
+            'battery' => $n1?->battery_level,
+        ];
+        $sensors = LogSensor::whereIn('device_id', $devices->pluck('id'))
+            ->orderByDesc('reported_at')->orderByDesc('id')->get()
+            ->unique(fn ($s) => $s->device_id.'-'.$s->sensor_type)->values()
+            ->map(fn ($s) => [
+                'device' => $devices->firstWhere('id', $s->device_id)?->device_code,
+                'type' => $s->sensor_type, 'state' => $s->operational_state,
+                'health' => $s->health_status, 'detail' => $s->detail,
+            ]);
+
+        $recent = GateLog::whereIn('crossing_id', $ids)->orderByDesc('logged_at')->orderByDesc('id')->limit(8)->get()
+            ->map(fn ($e) => [
+                'id' => $e->event_id, 'url' => route('events.show', $e->id),
+                'date' => $e->logged_at->format('d/m'), 'time' => $e->logged_at->format('H:i'),
+                'trigger' => $e->trigger_type, 'status' => $e->status_text, 'tone' => $e->tone,
+                'confidence' => $e->confidence_score, 'notes' => $e->notes,
+            ]);
+
+        return response()->json([
+            'now_hour' => now()->hour,
+            'kpi' => [
+                'total' => $closedToday->count(), 'auto' => $auto->count(), 'manual' => $manual->count(),
+                'avg_conf' => $confs->count() ? round($confs->avg(), 1) : null,
+            ],
+            'hourly' => ['today' => $todayHours, 'avg' => array_map(fn ($v) => round($v, 2), $avg)],
+            'weekly' => $weekly,
+            'gate' => $gate, 'alert' => $alert, 'live' => $live,
+            'devices' => $devices->map(fn ($d) => [
+                'code' => $d->device_code, 'name' => $d->name, 'type' => $d->type, 'status' => $d->status,
+                'seen_s' => $d->last_seen_at ? now()->timestamp - $d->last_seen_at->timestamp : null,
+                'battery' => $d->battery_level, 'crossing' => $d->crossing->code,
+            ]),
+            'sensors' => $sensors, 'recent' => $recent,
+        ]);
+    }
 }
-
-// di dalam loop(), bagian paling atas:
-if (millis() - lastHeartbeat > 30000) { lastHeartbeat = millis(); kirimHeartbeat(); }
-```
-
-Tanpa heartbeat, Node 2 hanya ditandai aktif saat ada log, dan dashboard akan menampilkannya "Terputus" setelah 90 detik tanpa laporan.
-
-## Ketidakcocokan yang saya temukan di kode ESP
-
-1. **Awalan paket LoRa berbeda.** `Node 1 RailSafe/Node1.ino` mengirim `RailSafe:...`, sedangkan Node 2 hanya mengenali `SIGAP:...`. Hanya `Node1/Node1.ino` yang cocok. Samakan salah satunya.
-2. **Ambang 70% vs proposal 85%.** Node 1 memakai `prob_kereta > 0.70`; proposal menulis 85%.
-3. **Belum ada hitung mundur 15 detik.** Node 2 menutup palang langsung saat sinyal diterima. Proposal: peringatan dulu, petugas diberi 15 detik, baru fail-safe. Pemeriksaan HC-SR04 saat ini hanya menunda 1 detik lalu tetap menutup, bukan menahan palang dan membunyikan sirine seperti di proposal.
-4. **Palang terbuka otomatis tidak dicatat.** Dashboard memperkirakan status palang dari log terakhir dan `gate_reopen_seconds` (15 dtk), jadi hanya perkiraan.
-5. **Emoji di LCD.** `"🚨 BAHAYA KERETA"` tidak tampil di LCD 16x2 (muncul karakter acak). Pakai teks biasa.
-6. **Buzzer memakai `delay()`** (2 x 150 ms per putaran) saat palang tertutup, sehingga tombol dan paket LoRa bisa terlambat dibaca. `millis()` lebih aman.
