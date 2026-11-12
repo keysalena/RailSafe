@@ -130,7 +130,7 @@ Pin ultrasonik kedua ditetapkan di `Node2.ino`; ubah `TRIG_PIN_2` dan `ECHO_PIN_
 - Saat alert pertama diterima, Node 2 memulai countdown `countdown_seconds`. Petugas dapat menutup palang manual sebelum countdown habis; jika tidak, Node 2 mencoba menutup otomatis.
 - Jika Node 2 menerima `STATUS_CLEAR` sebelum countdown habis, countdown dibatalkan dan LCD kembali menampilkan status aman/standby.
 - Sebelum penutupan otomatis, dua sensor memeriksa area. Jika salah satu sensor mendeteksi objek kurang dari 15 cm, Node 2 menunggu satu detik dan mengukur ulang. Jika masih terhalang, palang tetap terbuka dan percobaan otomatis diulang tiap dua detik; log `HELD` hanya dikirim sekali selama kondisi tahan tersebut.
-- Tombol arcade bekerja dengan mode tahan: saat ditekan palang menutup manual, saat dilepas palang terbuka dan sistem kembali standby. Tombol yang ditekan ketika sensor mendeteksi rintangan diabaikan.
+- Tombol arcade bekerja dengan mode tahan untuk penutupan manual: saat ditekan ketika siaga/hitung mundur palang menutup, lalu saat dilepas palang terbuka dan sistem kembali standby. Jika palang sudah tertutup otomatis, tekan tombol untuk membuka melalui override petugas; alert berulang diabaikan sampai Node 1 mengirim `STATUS_CLEAR`. Tombol yang ditekan ketika sensor mendeteksi rintangan diabaikan.
 - Saat palang tertutup, buzzer dibunyikan dengan pola jeda 150 ms.
 - Timer `gate_reopen_seconds` hanya membuka palang yang ditutup otomatis setelah `STATUS_CLEAR` segar diterima berkelanjutan dan palang tertutup setidaknya selama interval tersebut. Palang manual menutup selama tombol ditahan dan terbuka saat tombol dilepas. Status Node 1 yang hilang menahan palang otomatis tetap tertutup. Status-clear berasal dari klasifikasi model, bukan konfirmasi fisik kereta sudah lewat.
 
@@ -259,7 +259,7 @@ Loop
  │           └─ Jika palang otomatis tertutup, lanjutkan konfirmasi aman
  ├─ [C] Countdown habis tanpa penutupan manual → cek dua sensor, lalu tutup otomatis
  ├─ [D] Palang otomatis terbuka setelah status-clear segar terkonfirmasi selama `gate_reopen_seconds`
- ├─ [E] Palang yang ditutup otomatis hanya dibuka oleh konfirmasi status aman; tombol manual mengendalikan tutup selama ditekan
+ ├─ [E] Tombol membuka palang otomatis melalui override petugas; alert berulang ditahan sampai STATUS_CLEAR
  ├─ [F] Ambil konfigurasi dashboard saat boot dan setiap 30 detik
  └─ [G] Buzzer: HIGH 150 ms / LOW 150 ms saat palang tertutup
 ```
