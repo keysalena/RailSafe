@@ -247,9 +247,9 @@ function drawBars(w){const mx=Math.max(4,...w.map(d=>d.auto+d.manual));
 function drawGate(g,l){
  const st=g.state,closed=st==='CLOSED';
  const L={OPEN:['Palang terbuka','var(--green)','Tidak ada penutupan aktif'],
-  PENDING:['Menunggu petugas','#d98a06','Kereta terdeteksi, sisa '+g.remaining+' dtk untuk menutup palang'],
-  HELD:['Rel terhalang','var(--red)','Palang ditahan terbuka sampai rel kosong'],
-  CLOSED:['Palang tertutup','var(--red)',g.mode==='AUTO'?'Ditutup otomatis, diperkirakan terbuka lagi dalam '+g.remaining+' dtk':'Ditutup manual oleh petugas']}[st];
+ PENDING:['Menunggu petugas','#d98a06','Kereta terdeteksi, sisa '+g.remaining+' dtk untuk menutup palang'],
+ HELD:['Rel terhalang','var(--red)','Palang ditahan terbuka sampai rel kosong'],
+ CLOSED:['Palang tertutup','var(--red)',g.mode==='AUTO'?'Ditutup otomatis, diperkirakan terbuka lagi dalam '+g.remaining+' dtk':'Ditutup manual oleh petugas']}[st];
  $('ll').textContent=L[0];$('ll').style.color=L[1];$('lsub').textContent=L[2];
  $('lb').style.width=(g.last_confidence||0)+'%';
  $('lrs').textContent=l.rssi!=null?l.rssi+' dBm':'-';$('lds').textContent=l.distance_cm!=null?Math.round(l.distance_cm)+' cm':'-';$('lbat').textContent=l.battery!=null?l.battery+'%':'-'}
@@ -258,13 +258,21 @@ function drawGate(g,l){
 const ICON={train:'<svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="14" rx="3"/><path d="M6 11h12M9 21l2-4M15 21l-2-4"/><circle cx="9.5" cy="14" r=".6"/><circle cx="14.5" cy="14" r=".6"/></svg>',
  block:'<svg viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.01"/></svg>',
  ok:'<svg viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></svg>'};
-const dismissed=new Set();let curKey=null;
-$('am-close').onclick=()=>{if(curKey)dismissed.add(curKey);$('am').classList.remove('on')};
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('am').classList.contains('on'))$('am-close').click()});
+const dismissed=new Set();let curKey=null,alertTimer=null;
+
+function hideAlert(){
+ clearTimeout(alertTimer);
+ alertTimer=null;
+ if(curKey)dismissed.add(curKey);
+ $('am').classList.remove('on');
+}
+
+$('am-close').onclick=hideAlert;
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&$('am').classList.contains('on'))hideAlert()});
 
 function drawAlert(a){
  const m=$('am');
- if(!a){m.classList.remove('on');curKey=null;return}
+ if(!a){clearTimeout(alertTimer);alertTimer=null;m.classList.remove('on');curKey=null;return}
  const key=a.type+a.id;
  if(dismissed.has(key)){m.classList.remove('on');return}
  const card=$('am-card'),ring=$('am-ring');
@@ -284,7 +292,20 @@ function drawAlert(a){
   $('am-meta').textContent='';
  }
  m.classList.add('on');
- if(curKey!==key){curKey=key;$('am-close').focus()}
+ if(curKey!==key){
+  curKey=key;
+  clearTimeout(alertTimer);
+  alertTimer=null;
+  $('am-close').focus();
+  // Modal informasi (palang ditutup) otomatis hilang setelah 4 detik
+  if(a.type!=='COUNTDOWN'&&a.type!=='OBSTACLE'){
+   alertTimer=setTimeout(hideAlert,4000);
+  }
+ }
+ // Jika hitung mundur sudah 0 detik, otomatis hilangkan setelah 3 detik
+ if(a.type==='COUNTDOWN'&&a.remaining<=0&&!alertTimer){
+  alertTimer=setTimeout(hideAlert,3000);
+ }
 }
 
 function drawDevs(a){$('devs').innerHTML=a.length?a.map(d=>{const s=DS[d.status];const extra=d.ml_label?` · TinyML ${esc(d.ml_label)} ${Number(d.ml_confidence||0).toFixed(1)}%`:d.distance_cm!=null?` · jarak ${Number(d.distance_cm).toFixed(0)} cm`:'';return `<div class="item"><div class="ic ${d.type==='GATE_CONTROLLER'?'y':''}"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M8 18v2M16 18v2"/></svg></div><div><b>${esc(d.name||d.code)}</b><small>${esc(d.code)} · ${esc(d.crossing)}${d.battery!=null?' · baterai '+d.battery+'%':''}${extra}</small></div><div class="r"><span class="tag ${s[1]}">${s[0]}</span>${d.seen_s!=null?`<small>lapor ${d.seen_s} dtk lalu</small>`:''}</div></div>`}).join(''):'<p class="muted">Belum ada perangkat.</p>'}
@@ -337,4 +358,4 @@ const jkt=()=>new Date(new Date().toLocaleString('en-US',TZ));
 })();
 load();
 </script>
-@endpush  
+@endpush
