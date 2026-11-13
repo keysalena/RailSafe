@@ -101,7 +101,6 @@
     <div class="mini">
       <div><b id="lrs">-</b><span>RSSI LoRa</span></div>
       <div><b id="lds">-</b><span>Jarak HC-SR04</span></div>
-      <div><b id="lbat">-</b><span>Baterai Node 1</span></div>
     </div>
   </div>
   <div class="card">
@@ -252,7 +251,9 @@ function drawGate(g,l){
  CLOSED:['Palang tertutup','var(--red)',g.mode==='AUTO'?'Ditutup otomatis, menunggu Node 1 memastikan kereta sudah lewat':'Ditutup manual oleh petugas']}[st];
  $('ll').textContent=L[0];$('ll').style.color=L[1];$('lsub').textContent=L[2];
  $('lb').style.width=(g.last_confidence||0)+'%';
- $('lrs').textContent=l.rssi!=null?l.rssi+' dBm':'-';$('lds').textContent=l.distance_cm!=null?Math.round(l.distance_cm)+' cm':'-';$('lbat').textContent=l.battery!=null?l.battery+'%':'-'}
+ $('lrs').textContent=l.rssi!=null?l.rssi+' dBm':'-';$('lds').textContent=l.distance_cm!=null?Math.round(l.distance_cm)+' cm':'-'}
+
+function drawDevs(a){$('devs').innerHTML=a.length?a.map(d=>{const s=DS[d.status];const extra=d.ml_label?` · TinyML ${esc(d.ml_label)} ${Number(d.ml_confidence||0).toFixed(1)}%`:d.distance_cm!=null?` · jarak ${Number(d.distance_cm).toFixed(0)} cm`:'';return `<div class="item"><div class="ic ${d.type==='GATE_CONTROLLER'?'y':''}"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M8 18v2M16 18v2"/></svg></div><div><b>${esc(d.name||d.code)}</b><small>${esc(d.code)} · ${esc(d.crossing)}${extra}</small></div><div class="r"><span class="tag ${s[1]}">${s[0]}</span>${d.seen_s!=null?`<small>lapor ${d.seen_s} dtk lalu</small>`:''}</div></div>`}).join(''):'<p class="muted">Belum ada perangkat.</p>'}
 
 /* ===== peringatan di tengah layar ===== */
 const ICON={train:'<svg viewBox="0 0 24 24"><rect x="6" y="3" width="12" height="14" rx="3"/><path d="M6 11h12M9 21l2-4M15 21l-2-4"/><circle cx="9.5" cy="14" r=".6"/><circle cx="14.5" cy="14" r=".6"/></svg>',
@@ -282,7 +283,7 @@ function drawAlert(a){
   ring.style.display='';$('am-num').textContent=a.remaining;$('am-arc').style.strokeDashoffset=(339.3*(1-Math.max(0,a.remaining)/Math.max(1,a.total))).toFixed(1);
   $('am-meta').textContent=a.confidence!=null?'Keyakinan TinyML '+a.confidence+'%':'';beep();
  }else if(a.type==='OBSTACLE'){
-  card.className='am-card bad';$('am-ic').innerHTML=ICON.block;$('am-title').textContent='Rel terhalang!';
+  card.className='am-card bad';$('am-ic').innerHTML=ICON.block;$('am-title').textContent='Palang terhalang!';
   $('am-text').textContent='Ada kendaraan atau benda di area rel. Palang ditahan terbuka dan sirine darurat menyala. Segera kosongkan rel.';
   ring.style.display='none';$('am-meta').textContent='Terdeteksi '+a.age+' detik lalu. Peringatan hilang otomatis setelah rel kosong dan palang menutup.';beep();
  }else{

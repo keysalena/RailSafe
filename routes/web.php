@@ -38,7 +38,10 @@ Route::middleware(['auth', 'role:superadmin'])->prefix('admin')->name('admin.')-
 
     Route::get('/crossings', [CrossingController::class, 'index'])->name('crossings.index');
     Route::post('/crossings', [CrossingController::class, 'storeCrossing'])->name('crossings.store');
+    Route::put('/admin/crossings/{crossing}', [CrossingController::class, 'updateCrossing'])->name('crossings.update');
+    Route::delete('/admin/crossings/{crossing}', [CrossingController::class, 'destroyCrossing'])->name('crossings.destroy');
     Route::post('/devices', [CrossingController::class, 'storeDevice'])->name('devices.store');
+    Route::delete('/devices/{device}', [CrossingController::class, 'destroyDevice'])->name('devices.destroy');
     Route::post('/devices/{device}/token', [CrossingController::class, 'rotateToken'])->name('devices.token');
 
     Route::get('/settings', [SettingController::class, 'edit'])->name('settings.edit');
