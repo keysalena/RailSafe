@@ -106,6 +106,8 @@ Perangkat yang disebut oleh firmware:
 
 Pin ultrasonik kedua ditetapkan di `Node2.ino`; ubah `TRIG_PIN_2` dan `ECHO_PIN_2` jika rangkaian memakai pin lain. Pastikan tegangan sinyal ECHO HC-SR04 aman untuk GPIO ESP32 3,3 V; gunakan pembagi tegangan/level shifter bila modul memberikan sinyal 5 V. Catu daya servo sebaiknya sesuai kebutuhan arus servo dan memiliki ground bersama dengan ESP32.
 
+Untuk buzzer yang memerlukan arus/tegangan lebih besar, jangan menggerakkannya langsung dari GPIO 15. Gunakan modul driver/transistor dan catu daya sesuai spesifikasi buzzer; satukan GND catu daya buzzer dengan GND ESP32. Firmware memberi sinyal aktif-HIGH.
+
 ## Cara kerja firmware
 
 ### Node 1: deteksi dan pengiriman
@@ -129,9 +131,9 @@ Pin ultrasonik kedua ditetapkan di `Node2.ino`; ubah `TRIG_PIN_2` dan `ECHO_PIN_
 - Node 2 menerima paket LoRa dengan sync word `0xF3`: `ALERT_KERETA`, `STATUS_CLEAR`, dan `NODE_STATUS` dari Node 1.
 - Saat alert pertama diterima, Node 2 memulai countdown `countdown_seconds`. Petugas dapat menutup palang manual sebelum countdown habis; jika tidak, Node 2 mencoba menutup otomatis.
 - Jika Node 2 menerima `STATUS_CLEAR` sebelum countdown habis, countdown dibatalkan dan LCD kembali menampilkan status aman/standby.
-- Sebelum penutupan otomatis, dua sensor memeriksa area. Jika salah satu sensor mendeteksi objek kurang dari 15 cm, Node 2 menunggu satu detik dan mengukur ulang. Jika masih terhalang, palang tetap terbuka dan percobaan otomatis diulang tiap dua detik; log `HELD` hanya dikirim sekali selama kondisi tahan tersebut.
-- Tombol arcade bekerja dengan mode tahan: saat ditekan palang menutup manual, saat dilepas palang terbuka dan sistem kembali standby. Tombol yang ditekan ketika sensor mendeteksi rintangan diabaikan.
-- Saat palang tertutup, buzzer dibunyikan dengan pola jeda 150 ms.
+- Dua HC-SR04 dipindai setiap 2,5 detik; kedua sensor dibaca bergantian dengan jeda 60 ms. Satu bacaan di bawah 15 cm langsung menandai rintangan, sementara area harus bersih dalam dua sweep sebelum palang otomatis menutup kembali. Jika area terhalang saat countdown habis, palang ditahan terbuka. Jika objek terdeteksi saat palang otomatis tertutup, palang dibuka dan ditahan sampai area bersih. Jarak dicetak ke Serial Monitor setiap sweep.
+- Tombol arcade bekerja dengan mode tahan untuk penutupan manual: saat ditekan ketika siaga/hitung mundur palang menutup, lalu saat dilepas palang terbuka dan sistem kembali standby. Jika palang sudah tertutup otomatis, tekan tombol untuk membuka melalui override petugas; alert berulang diabaikan sampai Node 1 mengirim `STATUS_CLEAR`. Tombol yang ditekan ketika sensor mendeteksi rintangan diabaikan.
+- Saat hitung mundur, buzzer aktif 300 ms lalu jeda 100 ms. Saat palang tertutup, buzzer aktif 800 ms lalu jeda 120 ms. Saat rel terhalang, buzzer menyala terus.
 - Timer `gate_reopen_seconds` hanya membuka palang yang ditutup otomatis setelah `STATUS_CLEAR` segar diterima berkelanjutan dan palang tertutup setidaknya selama interval tersebut. Palang manual menutup selama tombol ditahan dan terbuka saat tombol dilepas. Status Node 1 yang hilang menahan palang otomatis tetap tertutup. Status-clear berasal dari klasifikasi model, bukan konfirmasi fisik kereta sudah lewat.
 
 ### Integrasi Laravel
@@ -259,9 +261,9 @@ Loop
  │           └─ Jika palang otomatis tertutup, lanjutkan konfirmasi aman
  ├─ [C] Countdown habis tanpa penutupan manual → cek dua sensor, lalu tutup otomatis
  ├─ [D] Palang otomatis terbuka setelah status-clear segar terkonfirmasi selama `gate_reopen_seconds`
- ├─ [E] Palang yang ditutup otomatis hanya dibuka oleh konfirmasi status aman; tombol manual mengendalikan tutup selama ditekan
+ ├─ [E] Tombol membuka palang otomatis melalui override petugas; alert berulang ditahan sampai STATUS_CLEAR
  ├─ [F] Ambil konfigurasi dashboard saat boot dan setiap 30 detik
- └─ [G] Buzzer: HIGH 150 ms / LOW 150 ms saat palang tertutup
+ └─ [G] Buzzer: countdown 300/100 ms, palang tertutup 800/120 ms, terhalang menyala terus
 ```
 
 **tutupPalangOtomatis(confidence):**
@@ -532,7 +534,7 @@ Pengaturan dapat diubah oleh superadmin. Node 2 mengambil `GET /api/config` saat
 
 - Pembukaan otomatis Node 2 memakai paket `STATUS_CLEAR` dari klasifikasi Node 1, bukan sekadar ketiadaan alert. Status-clear tetap bukan konfirmasi fisik kereta benar-benar telah lewat.
 - Jika ultrasonik tidak menerima pantulan, pembacaan dianggap `999 cm` (area kosong). Sensor gagal/terputus karena itu belum ditangani sebagai kondisi fault yang menahan palang.
-- Pemeriksaan objek dilakukan ketika peringatan kereta masuk, bukan pemantauan kontinu di area palang.
+- Pemindaian ultrasonik berjalan tiap 2,5 detik sesuai interval firmware, sehingga respons sensor dapat terlambat hingga sekitar 2,5 detik. Operasi HTTP sinkron dapat menambah jeda tersebut. Data jarak dashboard tetap diperbarui saat heartbeat Node 2 dikirim, setiap 30 detik.
 - Palang yang ditutup otomatis tetap terkunci sampai status aman terkonfirmasi. Penutupan manual berlangsung selama tombol ditahan; saat tombol dilepas palang terbuka dan sistem kembali standby.
 - Operasi servo, HTTP, `delay()`, dan pembacaan sensor bersifat blocking. Koneksi Wi-Fi/API yang lambat dapat menunda pembacaan LoRa dan tombol.
 - Node 1 mengirim prediksi setiap jendela satu detik saat ambang kereta terlampaui. Sampling aktual dapat berubah akibat waktu inferensi dan operasi lain.
