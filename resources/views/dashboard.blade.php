@@ -311,14 +311,26 @@ function drawAlert(a){
 
 function drawDevs(a){$('devs').innerHTML=a.length?a.map(d=>{const s=DS[d.status];const extra=d.ml_label?` · TinyML ${esc(d.ml_label)} ${Number(d.ml_confidence||0).toFixed(1)}%`:d.distance_cm!=null?` · jarak ${Number(d.distance_cm).toFixed(0)} cm`:'';return `<div class="item"><div class="ic ${d.type==='GATE_CONTROLLER'?'y':''}"><svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M8 18v2M16 18v2"/></svg></div><div><b>${esc(d.name||d.code)}</b><small>${esc(d.code)} · ${esc(d.crossing)}${d.battery!=null?' · baterai '+d.battery+'%':''}${extra}</small></div><div class="r"><span class="tag ${s[1]}">${s[0]}</span>${d.seen_s!=null?`<small>lapor ${d.seen_s} dtk lalu</small>`:''}</div></div>`}).join(''):'<p class="muted">Belum ada perangkat.</p>'}
 
-function drawSens(a){$('sens').innerHTML=a.length?a.map(s=>{let t=['Aktif','t-ok'];if(s.health==='FAULT')t=['Gangguan','t-bad'];else if(s.health==='UNKNOWN')t=['Belum diketahui','t-mute'];else if(s.state==='STANDBY')t=['Siaga','t-mute'];else if(s.state==='OFF')t=['Mati','t-mute'];
- return `<div class="item"><div><b>${esc(SN[s.type]||s.type)}</b><small>${esc(s.detail||s.device)}</small></div><div class="r"><span class="tag ${t[1]}">${t[0]}</span></div></div>`}).join(''):'<p class="muted">Belum ada laporan sensor. Laporan dikirim lewat /api/heartbeat.</p>'}
+function drawSens(a, devs){
+  const ds = {};
+  (devs || []).forEach(x => ds[x.code] = x.status);
+  $('sens').innerHTML = a.length ? a.map(s => {
+    let t = ['Aktif','t-ok'];
+    const dev = ds[s.device];
+    if (dev && dev !== 'ACTIVE') t = dev === 'FAULT' ? ['Gangguan','t-warn'] : dev === 'UNKNOWN' ? ['Belum diketahui','t-mute'] : ['Terputus','t-bad'];
+    else if (s.health === 'FAULT') t = ['Gangguan','t-bad'];
+    else if (s.health === 'UNKNOWN') t = ['Belum diketahui','t-mute'];
+    else if (s.state === 'STANDBY') t = ['Siaga','t-mute'];
+    else if (s.state === 'OFF') t = ['Mati','t-mute'];
+    return `<div class="item"><div><b>${esc(SN[s.type]||s.type)}</b><small>${esc(s.detail||s.device)}</small></div><div class="r"><span class="tag ${t[1]}">${t[0]}</span></div></div>`;
+  }).join('') : '<p class="muted">Belum ada laporan sensor. Laporan dikirim lewat /api/heartbeat.</p>';
+}
 
 function drawRows(a){$('rows').innerHTML=a.length?a.map(e=>`<tr onclick="location.href='${esc(e.url)}'"><td>${esc(e.date)} ${esc(e.time)}</td><td>${e.trigger==='AUTOMATIC'?'Otomatis':'Manual'}</td><td>${e.confidence!=null?e.confidence+'%':'-'}</td><td><span class="tag ${esc(e.tone)}">${esc(e.status)}</span></td><td>${esc(e.notes||'')}</td></tr>`).join(''):'<tr><td colspan="5">Belum ada log.</td></tr>'}
 
 function render(d){
  $('k1').textContent=d.kpi.total;$('k2').textContent=d.kpi.auto;$('k3').textContent=d.kpi.manual;$('k4').textContent=d.kpi.avg_conf!=null?d.kpi.avg_conf+'%':'-';
- drawDonut(d.kpi.manual,d.kpi.auto);drawArea(d.hourly,d.now_hour);drawBars(d.weekly);drawGate(d.gate,d.live);drawAlert(d.alert);drawDevs(d.devices);drawSens(d.sensors);drawRows(d.recent)}
+ drawDonut(d.kpi.manual,d.kpi.auto);drawArea(d.hourly,d.now_hour);drawBars(d.weekly);drawGate(d.gate,d.live);drawAlert(d.alert);drawDevs(d.devices);drawSens(d.sensors, d.devices);drawRows(d.recent)}
 
 async function load(){let next=3000;
  try{const r=await fetch(SUMMARY_URL,{headers:{'Accept':'application/json'},credentials:'same-origin'});
