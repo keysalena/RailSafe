@@ -41,6 +41,11 @@ const char* API_TOKEN_NODE2 = "rs_demo_node02_token"; // Token perangkat NODE-02
 #define BUZZER_PIN 15
 #define BUTTON_PIN 4   // Arcade Button (Manual Override)
 
+const unsigned long BUZZER_COUNTDOWN_ON_MS = 300;
+const unsigned long BUZZER_COUNTDOWN_OFF_MS = 100;
+const unsigned long BUZZER_CLOSED_ON_MS = 800;
+const unsigned long BUZZER_CLOSED_OFF_MS = 120;
+
 // Sensor Ultrasonik 1
 #define TRIG_PIN_1 12
 #define ECHO_PIN_1 27
@@ -61,6 +66,10 @@ const int GATE_CLOSE_ANGLE = 125;  // Palang Tertutup
 unsigned long COUNTDOWN_MS       = 15000; // Waktu petugas menutup palang sebelum fail-safe
 unsigned long AUTO_RESET_TIMEOUT = 15000; // Konfirmasi status aman sebelum auto-open
 const long OBSTACLE_CM = 15;              // Jarak di bawah ini dianggap ada rintangan
+const unsigned long ULTRASONIC_SCAN_INTERVAL_MS = 2500; // Satu sweep kedua sensor tiap 2,5 detik
+const unsigned long ULTRASONIC_SENSOR_GAP_MS = 60;     // Jeda antarsensor untuk mengurangi crosstalk
+const int OBSTACLE_CONFIRM_READS = 1;
+const int OBSTACLE_CLEAR_READS = 2;
 
 // ==================== STATUS SISTEM ====================
 enum Keadaan { SIAGA, HITUNG_MUNDUR, TERTUTUP, TERHALANG };
@@ -68,7 +77,14 @@ Keadaan keadaan = SIAGA;
 
 bool ditutupManual = false;
 float lastConfidence = 0.0;
-int obstacleClearCount = 0;
+long jarakUltrasonik1 = 100;
+long jarakUltrasonik2 = 100;
+int obstacleNearCount1 = 0;
+int obstacleNearCount2 = 0;
+int obstacleClearCount1 = 0;
+int obstacleClearCount2 = 0;
+bool obstacleSensor1 = false;
+bool obstacleSensor2 = false;
 int lastShownSec = -1;
 bool beepOn = false;
 bool buttonRawState = false;
@@ -83,7 +99,7 @@ unsigned long noTrainSince = 0;
 unsigned long autoClosedAt = 0;
 unsigned long lastNode1StatusAt = 0;
 unsigned long countdownStart = 0;
-unsigned long lastObstacleCheck = 0;
+unsigned long lastUltrasonicScanAt = 0;
 unsigned long lastBeep = 0;
 unsigned long lastHeartbeat = 0;
 unsigned long lastConfigRefresh = 0;
@@ -152,6 +168,7 @@ void setup() {
 void loop() {
   cekTombolManual();   // A. Arcade Button
   bacaLoRa();          // B. Sinyal kereta dari Node 1
+  pantauUltrasonik();  // Pantau area terus-menerus
   prosesKeadaan();     // C. Hitung mundur, rintangan, auto reset
   perbaruiBuzzer();    // D. Buzzer/sirine tanpa delay()
   kirimHeartbeat();    // E. Status kedua node dikirim berkala ke dashboard
@@ -212,7 +229,6 @@ void bacaLoRa() {
       keadaan = SIAGA;
       countdownStart = 0;
       lastShownSec = -1;
-      obstacleClearCount = 0;
       digitalWrite(BUZZER_PIN, LOW);
       tampilkanStatusLCD("RailSafe READY", "STATUS: AMAN");
       Serial.println("STATUS_CLEAR diterima; penutupan tertunda dibatalkan.");
@@ -256,20 +272,18 @@ void prosesKeadaan() {
     }
 
     case TERHALANG:
-      if (now - lastObstacleCheck > 500) {
-        lastObstacleCheck = now;
-        if (adaRintangan()) {
-          obstacleClearCount = 0;
-        } else {
-          obstacleClearCount++;
-          if (obstacleClearCount >= 3) { // Rel kosong selama ~1,5 detik
-            tutupPalangOtomatis("Rintangan hilang, palang ditutup otomatis");
-          }
-        }
+      if (!adaRintangan()) {
+        tutupPalangOtomatis("Rintangan hilang, palang ditutup otomatis");
       }
       break;
 
     case TERTUTUP:
+      // Jika objek masuk setelah palang otomatis turun, buka kembali dan tahan
+      // sampai area terdeteksi kosong secara stabil.
+      if (!ditutupManual && adaRintangan()) {
+        tahanPalangKarenaRintangan("Objek terdeteksi saat palang otomatis tertutup");
+        break;
+      }
       // Auto-open hanya untuk palang otomatis dengan STATUS_CLEAR segar berkelanjutan.
       if (!ditutupManual && noTrainSince != 0 &&
           now - lastNodeStatusTime <= NODE_STATUS_STALE_MS &&
@@ -295,17 +309,21 @@ void prosesKeadaan() {
 }
 
 void waktuHabis() {
-  // Petugas tidak merespons. Cek rintangan dulu sebelum menutup (fail-safe 2x HC-SR04).
+  // Petugas tidak merespons. Gunakan hasil pantauan ultrasonik terkini.
   if (adaRintangan()) {
-    keadaan = TERHALANG;
-    obstacleClearCount = 0;
-    lastObstacleCheck = millis();
-    Serial.println("WARN: Rel terhalang! Palang ditahan terbuka.");
-    tampilkanStatusLCD("REL TERHALANG!", "PALANG DITAHAN");
-    kirimGateLog("AUTOMATIC", 0, "Rel terhalang, palang ditahan terbuka", "HELD", 1);
+    tahanPalangKarenaRintangan("Rel terhalang, palang ditahan terbuka");
   } else {
     tutupPalangOtomatis("Petugas tidak merespons, ditutup otomatis (fail-safe)");
   }
+}
+
+void tahanPalangKarenaRintangan(String notes) {
+  bukaPalang();
+  keadaan = TERHALANG;
+  ditutupManual = false;
+  Serial.println("WARN: Rintangan terdeteksi; palang ditahan/dibuka.");
+  tampilkanStatusLCD("KENDARAAN ADA!", "PALANG DITAHAN");
+  kirimGateLog("AUTOMATIC", lastConfidence, notes, "HELD", 1);
 }
 
 // ==================== FUNGSI-FUNGSI KONTROL ====================
@@ -376,15 +394,16 @@ void cekTombolManual() {
 
 void perbaruiBuzzer() {
   unsigned long now = millis();
-  unsigned long interval = 0;
+  unsigned long interval;
 
   if (keadaan == TERHALANG) {          // Sirine darurat: menyala terus
+    beepOn = true;
     digitalWrite(BUZZER_PIN, HIGH);
     return;
   } else if (keadaan == HITUNG_MUNDUR) {
-    interval = 100;                    // Bunyi cepat: segera tutup palang
+    interval = beepOn ? BUZZER_COUNTDOWN_ON_MS : BUZZER_COUNTDOWN_OFF_MS;
   } else if (keadaan == TERTUTUP) {
-    interval = 150;                    // Seperti sebelumnya
+    interval = beepOn ? BUZZER_CLOSED_ON_MS : BUZZER_CLOSED_OFF_MS;
   } else {
     digitalWrite(BUZZER_PIN, LOW);
     beepOn = false;
@@ -411,22 +430,38 @@ long ukurJarakHCSR04(int trigPin, int echoPin) {
   return duration * 0.034 / 2;
 }
 
-// 3 kali baca per sensor; rintangan terdeteksi jika minimal salah satu sensor mencatat >= 2 hits di bawah OBSTACLE_CM
-bool adaRintangan() {
-  int hits1 = 0;
-  int hits2 = 0;
-
-  for (int i = 0; i < 3; i++) {
-    long jarak1 = ukurJarakHCSR04(TRIG_PIN_1, ECHO_PIN_1);
-    delay(15); // Jeda singkat mencegah interferensi gelombang ultrasonik antar sensor
-    long jarak2 = ukurJarakHCSR04(TRIG_PIN_2, ECHO_PIN_2);
-
-    if (jarak1 > 0 && jarak1 < OBSTACLE_CM) hits1++;
-    if (jarak2 > 0 && jarak2 < OBSTACLE_CM) hits2++;
-    delay(25);
+void perbaruiStatusRintangan(long jarak, int& nearCount, int& clearCount, bool& sensorTerhalang) {
+  if (jarak < OBSTACLE_CM) {
+    nearCount = min(nearCount + 1, OBSTACLE_CONFIRM_READS);
+    clearCount = 0;
+    if (nearCount >= OBSTACLE_CONFIRM_READS) sensorTerhalang = true;
+  } else {
+    nearCount = 0;
+    clearCount = min(clearCount + 1, OBSTACLE_CLEAR_READS);
+    if (clearCount >= OBSTACLE_CLEAR_READS) sensorTerhalang = false;
   }
+}
 
-  return (hits1 >= 2) || (hits2 >= 2);
+// Jalankan satu sweep kedua sensor setiap 2,5 detik dengan jeda antarsensor.
+void pantauUltrasonik() {
+  unsigned long now = millis();
+  if (now - lastUltrasonicScanAt < ULTRASONIC_SCAN_INTERVAL_MS) return;
+
+  jarakUltrasonik1 = ukurJarakHCSR04(TRIG_PIN_1, ECHO_PIN_1);
+  perbaruiStatusRintangan(jarakUltrasonik1, obstacleNearCount1, obstacleClearCount1, obstacleSensor1);
+  delay(ULTRASONIC_SENSOR_GAP_MS);
+  jarakUltrasonik2 = ukurJarakHCSR04(TRIG_PIN_2, ECHO_PIN_2);
+  perbaruiStatusRintangan(jarakUltrasonik2, obstacleNearCount2, obstacleClearCount2, obstacleSensor2);
+
+  lastUltrasonicScanAt = millis();
+  Serial.printf("Ultrasonik: S1=%ld cm (%s), S2=%ld cm (%s), rintangan=%s\n",
+                jarakUltrasonik1, obstacleSensor1 ? "TERHALANG" : "clear",
+                jarakUltrasonik2, obstacleSensor2 ? "TERHALANG" : "clear",
+                adaRintangan() ? "YA" : "TIDAK");
+}
+
+bool adaRintangan() {
+  return obstacleSensor1 || obstacleSensor2;
 }
 
 String pad16(String s) {
@@ -485,10 +520,9 @@ void kirimHeartbeat() {
   if (millis() - lastHeartbeat < 30000) return;
   lastHeartbeat = millis();
 
-  long jarak1 = ukurJarakHCSR04(TRIG_PIN_1, ECHO_PIN_1);
-  delay(15);
-  long jarak2 = ukurJarakHCSR04(TRIG_PIN_2, ECHO_PIN_2);
-  long jarakTerdekat = min(jarak1, jarak2); // Tetap kompatibel dengan field distance_cm di Laravel
+  long jarak1 = jarakUltrasonik1;
+  long jarak2 = jarakUltrasonik2;
+  long jarakTerdekat = min(jarak1, jarak2); // Cache dari pemantauan kontinu
 
   String node2Json = "{";
   node2Json += "\"firmware_version\":\"RailSafe-Node2\",";
