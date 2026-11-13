@@ -12,7 +12,7 @@ return new class extends Migration {
             $t->foreignId('crossing_id')->constrained()->cascadeOnDelete();
             $t->string('device_code', 30)->unique();     // NODE-01, NODE-02
             $t->string('name', 100)->nullable();
-            $t->string('type', 20);                      // SENSOR_NODE | GATE_CONTROLLER
+            $t->string('type', 20)->nullable();          // SENSOR_NODE | GATE_CONTROLLER
             $t->string('api_token_hash', 64);            // sha256 dari token perangkat
             $t->boolean('is_active')->default(true);
             $t->string('firmware_version', 20)->nullable();

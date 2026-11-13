@@ -10,7 +10,7 @@ return new class extends Migration {
         Schema::create('crossings', function (Blueprint $t) {
             $t->id();
             $t->string('code', 30)->unique();          // contoh: PJL-MLG-01
-            $t->string('name', 150);
+            $t->string('name', 150)->nullable();         
             $t->string('address')->nullable();
             $t->decimal('latitude', 9, 6)->nullable();
             $t->decimal('longitude', 9, 6)->nullable();
